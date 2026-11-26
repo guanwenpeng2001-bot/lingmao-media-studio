@@ -1,11 +1,8 @@
 # lingmao-media-studio
 
-灵猫互娱 · 图片/视频生成工作台（Image & Video Generation Workbench）。
+Lingmao Media Studio — Multimodal Image & Video Generation Workbench (灵猫互娱图片/视频多模态生成工作台).
 
-## Status
+## Branching Policy
 
-Repository initialized. Product requirements, UX/UI design, and system architecture will be added in subsequent phases.
-
-## Directory Structure
-
-- `docs/` — Product, UX/UI, and architecture specifications (reserved)
+- `main`: Protected release branch. Do not commit directly to `main`.
+- `dev`: Primary integration development branch.
