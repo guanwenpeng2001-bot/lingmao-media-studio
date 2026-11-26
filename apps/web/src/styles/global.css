@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * {
+    border-color: var(--border-subtle);
+  }
+}
+
+.tabular-metric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标准透明棋盘格底纹（商品抠图/叠加质检不受明暗外框干扰） */
+.checkerboard-bg {
+  background-color: var(--checkerboard-a);
+  background-image:
+    linear-gradient(45deg, var(--checkerboard-b) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checkerboard-b) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checkerboard-b) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checkerboard-b) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* 骨架屏扫光 */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background-color: var(--bg-subtle);
+  background-image: linear-gradient(
+    110deg,
+    transparent 25%,
+    var(--shimmer-highlight) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* 画布运行中连线流动与呼吸光晕 */
+@keyframes edge-flow {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes node-pulse {
+  0%,
+  100% {
+    box-shadow: var(--glow-node-running);
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--status-running-border), var(--glow-node-running);
+  }
+}
+
+.rf-node-running {
+  animation: node-pulse 1.6s infinite;
+}
+
+.rf-edge-running path {
+  stroke: var(--edge-running);
+  stroke-dasharray: 6 6;
+  animation: edge-flow 0.9s linear infinite;
+}
+
+.rf-edge-stale path {
+  stroke: var(--edge-stale);
+  stroke-dasharray: 4 4;
+}
+
+/* Zoom < 0.40 LOD 降级态：暂停动画并极简渲染 */
+.rf-lod-minimal .rf-node-running {
+  animation: none;
+  box-shadow: none;
+}
+
+.rf-lod-minimal .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* React Flow 语义化适配 */
+.react-flow__background {
+  background-color: var(--canvas-board-bg);
+}
+
+.react-flow__controls {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--bg-hover);
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__minimap {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
