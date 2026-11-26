@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from PIL import Image, ImageDraw, ImageFilter
-from app.config import get_settings
+from app.config import KNOWN_EXAMPLE_SECRETS, get_settings
 from app.errors import AppError
 from app.providers.storage import PrivateObjectStorage, inspect_media_bytes
 
@@ -385,9 +385,47 @@ class DeterministicDemoGenerationAdapter:
         )
 
 
+def _is_example_or_weak_secret(secret: str) -> bool:
+    lower = secret.lower()
+    if lower in KNOWN_EXAMPLE_SECRETS:
+        return True
+    if lower.startswith(("dev-", "example-", "test-", "placeholder-", "dummy-", "sample-")):
+        return True
+    if "webhook-secret" in lower or len(secret) < 16:
+        return True
+    return False
+
+
+def validate_generation_webhook_secret() -> str:
+    settings = get_settings()
+    secret = (settings.generation_webhook_secret or "").strip()
+    if not secret:
+        raise AppError(
+            503,
+            "PROVIDER_UNAVAILABLE",
+            "未配置生成回调验签密钥 (LINGMAO_GENERATION_WEBHOOK_SECRET)，拒绝处理回调",
+        )
+    if _is_example_or_weak_secret(secret):
+        if settings.env_mode == "live":
+            raise AppError(
+                503,
+                "PROVIDER_UNAVAILABLE",
+                "生产环境禁止使用已知示例或默认回调密钥",
+            )
+        raise AppError(
+            400,
+            "INVALID_SIGNATURE",
+            "禁止使用已知示例回调密钥，请注入本地随机密钥",
+        )
+    return secret
+
+
 def verify_webhook_signature(raw_body: bytes, signature_header: str | None, secret: str) -> bool:
-    if not signature_header or not secret:
+    clean_secret = (secret or "").strip()
+    if not signature_header or not clean_secret:
         return False
-    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    if _is_example_or_weak_secret(clean_secret):
+        return False
+    expected = hmac.new(clean_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     provided = signature_header.removeprefix("sha256=").strip()
     return hmac.compare_digest(expected, provided)

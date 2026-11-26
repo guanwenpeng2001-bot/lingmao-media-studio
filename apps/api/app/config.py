@@ -5,6 +5,20 @@ import tempfile
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+KNOWN_EXAMPLE_SECRETS: frozenset[str] = frozenset(
+    {
+        "changeme",
+        "secret",
+        "example",
+        "test",
+        "default",
+        "replace-me",
+        "placeholder",
+        "none",
+        "null",
+    }
+)
+
 
 def _default_storage_dir() -> str:
     candidate = Path("C:/Users/Administrator/orca/workspaces/lingmao-media-studio-work/backend-ecommerce/storage")
@@ -22,22 +36,22 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/lingmao_studio"
-    env_mode: str = "sandbox"  # "sandbox" | "live"
+    env_mode: str = "live"  # Defaults to "live"; must be explicitly set to "sandbox" for local demo/sandbox
     storage_dir: str = _default_storage_dir()
 
-    # Explicit opt-in for deterministic dev inference adapter
-    demo_inference_enabled: bool = True
+    # Sandbox/demo switches default to False and are only honored when env_mode == "sandbox"
+    demo_inference_enabled: bool = False
     live_provider_url: str = ""
     live_provider_api_key: str = ""
 
-    # Explicit opt-in for sandbox payment and OTP
-    sandbox_billing_enabled: bool = True
-    sandbox_otp_enabled: bool = True
-    sandbox_otp_code: str = "123456"
+    sandbox_billing_enabled: bool = False
+    sandbox_otp_enabled: bool = False
+    sandbox_otp_code: str = ""
 
+    # Secrets must be injected from the environment; no hardcoded fallback values
     payment_merchant_id: str = ""
-    payment_webhook_secret: str = "dev-payment-webhook-secret"
-    generation_webhook_secret: str = "dev-generation-webhook-secret"
+    payment_webhook_secret: str = ""
+    generation_webhook_secret: str = ""
     sms_provider_url: str = ""
 
     # P1 Feature flags (default false in P0)
@@ -62,13 +76,25 @@ class Settings(BaseSettings):
 
     @property
     def has_live_inference(self) -> bool:
-        return bool(self.live_provider_url and self.live_provider_api_key)
+        # Stage 5 implements only the deterministic demo adapter for sandbox integration.
+        # Live cloud/ComfyUI provider drivers are not connected; filling config strings alone must not claim availability.
+        return False
+
+    @property
+    def is_sandbox_billing(self) -> bool:
+        return bool(self.sandbox_billing_enabled and self.env_mode == "sandbox")
+
+    @property
+    def has_live_billing(self) -> bool:
+        # Stage 5 implements only sandbox billing verification.
+        # Live merchant payment channels are not connected; filling merchant config alone must not claim live checkout.
+        return False
 
     @property
     def checkout_mode(self) -> str:
-        if self.payment_merchant_id and self.env_mode == "live":
+        if self.has_live_billing:
             return "live"
-        if self.sandbox_billing_enabled and self.env_mode == "sandbox":
+        if self.is_sandbox_billing:
             return "sandbox"
         return "unavailable"
 

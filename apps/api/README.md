@@ -10,15 +10,29 @@ FastAPI service, PostgreSQL transactional data layer, private object storage gat
 
 ## Environment Configuration
 
-Copy `.env.example` to a local `.env` (never commit `.env` or runtime storage files to Git):
+All sandbox/demo switches default to `false` (`LINGMAO_ENV_MODE=live`), and webhook signature secrets (`LINGMAO_PAYMENT_WEBHOOK_SECRET`, `LINGMAO_GENERATION_WEBHOOK_SECRET`) have **no hardcoded defaults**—they must be injected via environment variables.
+
+To initialize a local sandbox `.env` safely (never commit `.env` or runtime storage files to Git):
 
 ```powershell
 cd apps/api
 Copy-Item .env.example .env
+
+# Generate random local HMAC secrets and explicitly opt in to local sandbox mode:
+$paySecret = python -c "import secrets; print(secrets.token_hex(32))"
+$genSecret = python -c "import secrets; print(secrets.token_hex(32))"
+Add-Content .env "`nLINGMAO_ENV_MODE=sandbox"
+Add-Content .env "LINGMAO_DEMO_INFERENCE_ENABLED=true"
+Add-Content .env "LINGMAO_SANDBOX_BILLING_ENABLED=true"
+Add-Content .env "LINGMAO_SANDBOX_OTP_ENABLED=true"
+Add-Content .env "LINGMAO_SANDBOX_OTP_CODE=123456"
+Add-Content .env "LINGMAO_PAYMENT_WEBHOOK_SECRET=$paySecret"
+Add-Content .env "LINGMAO_GENERATION_WEBHOOK_SECRET=$genSecret"
 ```
 
-- `LINGMAO_DEMO_INFERENCE_ENABLED=true` and `LINGMAO_ENV_MODE=sandbox` explicitly enable the deterministic local inference adapter (`execution="demo"` in `GET /api/v1/models`). When disabled without live provider credentials, generation endpoints return `503 PROVIDER_UNAVAILABLE`.
-- `LINGMAO_SANDBOX_BILLING_ENABLED=true` and `LINGMAO_ENV_MODE=sandbox` enable isolated sandbox checkout and signed webhook verification (`checkoutMode="sandbox"`). No real payment charges are ever triggered.
+- **Explicit Sandbox / Demo Opt-In**: `LINGMAO_DEMO_INFERENCE_ENABLED`, `LINGMAO_SANDBOX_BILLING_ENABLED`, and `LINGMAO_SANDBOX_OTP_ENABLED` are `false` by default and take effect **only** when `LINGMAO_ENV_MODE=sandbox`.
+- **Webhook Secret Isolation**: If `LINGMAO_PAYMENT_WEBHOOK_SECRET` or `LINGMAO_GENERATION_WEBHOOK_SECRET` is missing, empty, or set to a known example placeholder, webhook callbacks are rejected before any database, ledger, asset, or job state mutation occurs.
+- **Honest Live Channel Status**: Stage 5 implements the `sandbox`/`demo` adapters only (`live_inference_driver_connected=False`, `live_billing_driver_connected=False`, `live_sms_driver_connected=False`). Merely populating `LINGMAO_LIVE_PROVIDER_URL` or `LINGMAO_PAYMENT_MERCHANT_ID` does not falsely report live availability; in `live` mode or when sandbox switches are off, generation, checkout, and OTP fail cleanly with `503 PROVIDER_UNAVAILABLE` / `503 BILLING_UNAVAILABLE`.
 - P1 feature flags (`LINGMAO_FEATURE_VIRTUAL_TRYON`, `LINGMAO_FEATURE_ORG_COLLABORATION`, `LINGMAO_FEATURE_AUDIO_STUDIO`) default to `false` and return `404 FEATURE_DISABLED` on gated endpoints/modes.
 
 ## Database Migration & Startup Commands

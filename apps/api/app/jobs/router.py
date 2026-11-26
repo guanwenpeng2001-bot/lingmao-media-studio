@@ -56,7 +56,11 @@ from app.models import (
     SubjectVersionRecord,
     utcnow,
 )
-from app.providers.generation import DeterministicDemoGenerationAdapter, verify_webhook_signature
+from app.providers.generation import (
+    DeterministicDemoGenerationAdapter,
+    validate_generation_webhook_secret,
+    verify_webhook_signature,
+)
 from app.providers.storage import PrivateObjectStorage
 from app.schemas import (
     BatchOut,
@@ -1490,10 +1494,10 @@ async def receive_generation_event(
     provider_signature: str | None = Header(default=None, alias="Provider-Signature"),
     db: Session = Depends(get_db),
 ) -> Response:
+    secret = validate_generation_webhook_secret()
     _ensure_provider_ready()
-    settings = get_settings()
     raw_body = await request.body()
-    if not verify_webhook_signature(raw_body, provider_signature, settings.generation_webhook_secret):
+    if not verify_webhook_signature(raw_body, provider_signature, secret):
         raise AppError(400, "INVALID_SIGNATURE", "生成供应商回调签名验证失败")
 
     try:

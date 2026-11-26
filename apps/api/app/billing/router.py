@@ -29,7 +29,11 @@ from app.models import (
     SubscriptionRecord,
     utcnow,
 )
-from app.providers.payment import ensure_billing_available, verify_payment_webhook_signature
+from app.providers.payment import (
+    ensure_billing_available,
+    validate_payment_webhook_secret,
+    verify_payment_webhook_signature,
+)
 from app.schemas import (
     BillingStateOut,
     CheckoutOut,
@@ -299,6 +303,7 @@ async def receive_payment_event(
     provider_signature: str | None = Header(default=None, alias="Provider-Signature"),
     db: Session = Depends(get_db),
 ) -> Response:
+    validate_payment_webhook_secret()
     ensure_billing_available()
     raw_body = await request.body()
     if not verify_payment_webhook_signature(raw_body, provider_signature):
