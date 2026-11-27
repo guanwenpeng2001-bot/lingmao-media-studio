@@ -1,0 +1,114 @@
+x-api-env: &api-env
+  LINGMAO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-lingmao_studio}
+  LINGMAO_STORAGE_DIR: /data/storage
+  LINGMAO_ENV_MODE: ${LINGMAO_ENV_MODE:-live}
+  LINGMAO_DEMO_INFERENCE_ENABLED: ${LINGMAO_DEMO_INFERENCE_ENABLED:-false}
+  LINGMAO_SANDBOX_BILLING_ENABLED: ${LINGMAO_SANDBOX_BILLING_ENABLED:-false}
+  LINGMAO_SANDBOX_OTP_ENABLED: ${LINGMAO_SANDBOX_OTP_ENABLED:-false}
+  LINGMAO_SANDBOX_OTP_CODE: ${LINGMAO_SANDBOX_OTP_CODE:-}
+  LINGMAO_PAYMENT_WEBHOOK_SECRET: ${LINGMAO_PAYMENT_WEBHOOK_SECRET:-}
+  LINGMAO_GENERATION_WEBHOOK_SECRET: ${LINGMAO_GENERATION_WEBHOOK_SECRET:-}
+  LINGMAO_TRUST_PROXY_HEADERS: ${LINGMAO_TRUST_PROXY_HEADERS:-true}
+  LINGMAO_ALLOWED_ORIGINS: ${LINGMAO_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+  LINGMAO_FEATURE_VIRTUAL_TRYON: ${LINGMAO_FEATURE_VIRTUAL_TRYON:-false}
+  LINGMAO_FEATURE_ORG_COLLABORATION: ${LINGMAO_FEATURE_ORG_COLLABORATION:-false}
+  LINGMAO_FEATURE_AUDIO_STUDIO: ${LINGMAO_FEATURE_AUDIO_STUDIO:-false}
+  LINGMAO_INITIAL_TRIAL_CREDITS: ${LINGMAO_INITIAL_TRIAL_CREDITS:-100}
+  LINGMAO_WORKER_POLL_INTERVAL_SECONDS: ${LINGMAO_WORKER_POLL_INTERVAL_SECONDS:-0.5}
+  LINGMAO_WORKER_LEASE_SECONDS: ${LINGMAO_WORKER_LEASE_SECONDS:-30}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lingmao_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Dev-only default; override POSTGRES_PASSWORD via environment in production.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - lingmao_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-lingmao_studio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  migrate:
+    image: lingmao-studio-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: lingmao-studio-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - lingmao_storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3); assert r.status == 200",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  worker:
+    image: lingmao-studio-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - lingmao_storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: lingmao-studio-web:local
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  lingmao_pgdata:
+  lingmao_storage:
