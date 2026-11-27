@@ -480,7 +480,10 @@ export const api = {
   sandboxConfirmCheckout(checkoutId: string): Promise<Checkout> {
     return requestJson(
       `/billing/checkout-sessions/${encodeURIComponent(checkoutId)}/sandbox-confirm`,
-      { method: 'POST' }
+      {
+        method: 'POST',
+        idempotencyKey: `sandbox-confirm-${checkoutId}`,
+      }
     );
   },
   stopRenewal(idempotencyKey?: string): Promise<BillingState> {

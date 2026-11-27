@@ -210,11 +210,22 @@ export const CheckoutPage: React.FC = () => {
           openLoginModal(() => {
             void loadCheckout();
           });
-        } else if (mapped.kind === 'cancelled' || mapped.kind === 'expired') {
-          // Re-query latest status for consistency
+        } else if (
+          mapped.kind === 'cancelled' ||
+          mapped.kind === 'expired' ||
+          err.code === 'INVALID_IDEMPOTENCY_KEY' ||
+          err.code === 'IDEMPOTENCY_CONFLICT'
+        ) {
+          // Re-query latest order status for consistency
           void api
             .getCheckoutSession(checkout.id)
-            .then((fresh) => setCheckout(fresh))
+            .then((fresh) => {
+              setCheckout(fresh);
+              if (fresh.status === 'paid') {
+                setErrorState(null);
+                void loadBillingEvidence();
+              }
+            })
             .catch(() => {});
         }
       } else {

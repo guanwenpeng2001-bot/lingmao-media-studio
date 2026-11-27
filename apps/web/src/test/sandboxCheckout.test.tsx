@@ -260,4 +260,54 @@ describe('P0-1 Sandbox Checkout Confirm Page (/billing/checkout/:checkoutId)', (
     });
     r4.unmount();
   });
+
+  it('sends deterministic Idempotency-Key header sandbox-confirm-{checkoutId} with empty body and refreshes order on 409 IDEMPOTENCY_CONFLICT', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify(paidCheckout), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    const res = await api.sandboxConfirmCheckout('chk-pro-01');
+    expect(res.status).toBe('paid');
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/v1/billing/checkout-sessions/chk-pro-01/sandbox-confirm',
+      expect.objectContaining({
+        method: 'POST',
+        body: undefined,
+        headers: expect.objectContaining({
+          'Idempotency-Key': 'sandbox-confirm-chk-pro-01',
+        }),
+      })
+    );
+
+    // Also verify 409 IDEMPOTENCY_CONFLICT triggers error display and re-queries order status
+    const getOrderSpy = vi
+      .spyOn(api, 'getCheckoutSession')
+      .mockResolvedValueOnce(pendingCheckout)
+      .mockResolvedValueOnce(pendingCheckout);
+    vi.spyOn(api, 'sandboxConfirmCheckout').mockRejectedValueOnce(
+      new ApiClientError({
+        status: 409,
+        code: 'IDEMPOTENCY_CONFLICT',
+        message: 'Idempotency key conflict',
+        requestId: 'req-idem-409',
+      })
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/billing/checkout/chk-pro-01']}>
+        <AppProvider>
+          <AppRoutes />
+        </AppProvider>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByTestId('sandbox-confirm-btn'));
+    expect(await screen.findByTestId('checkout-error-generic')).toHaveTextContent('Idempotency key conflict');
+    await waitFor(() => {
+      expect(getOrderSpy).toHaveBeenCalledTimes(2);
+    });
+  });
 });
