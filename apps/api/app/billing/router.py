@@ -364,31 +364,24 @@ def confirm_sandbox_checkout(
     if ctx.role == "viewer":
         raise AppError(403, "READ_ONLY", "只读成员不能确认支付")
 
-    if idempotency_key is not None:
-        raw_key = idempotency_key.strip()
-        if not raw_key or len(raw_key) > 128:
-            raise AppError(400, "INVALID_IDEMPOTENCY_KEY", "确认请求需要有效的幂等键")
-    else:
-        raw_key = ""
+    raw_key = (idempotency_key or "").strip()
+    if not raw_key or len(raw_key) > 128 or not raw_key.isprintable():
+        raise AppError(400, "INVALID_IDEMPOTENCY_KEY", "确认请求需要有效的幂等键")
 
     lock_workspace_usage(db, ctx.workspace_id)
     digest = canonical_digest({"checkoutId": order.id})
-    existing = (
-        check_request_idempotency(
-            db,
-            ctx.workspace_id,
-            ctx.user_id,
-            "confirmSandboxCheckout",
-            "billing",
-            raw_key,
-            digest,
-        )
-        if raw_key
-        else None
+    existing = check_request_idempotency(
+        db,
+        ctx.workspace_id,
+        ctx.user_id,
+        "confirmSandboxCheckout",
+        "billing",
+        raw_key,
+        digest,
     )
 
     if order.state == "paid":
-        if raw_key and existing is None:
+        if existing is None:
             save_request_idempotency(
                 db,
                 ctx.workspace_id,
@@ -414,7 +407,7 @@ def confirm_sandbox_checkout(
         raise AppError(410, "CHECKOUT_EXPIRED", "订单已过期，请重新创建订单")
 
     _settle_paid_order_tx(db, order, trade_id=f"sbx-trd-{order.id}", now=now)
-    if raw_key and existing is None:
+    if existing is None:
         save_request_idempotency(
             db,
             ctx.workspace_id,

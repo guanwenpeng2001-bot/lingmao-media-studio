@@ -18,12 +18,15 @@ from app.db import Base, get_engine, get_session_factory, reset_engine
 from app.main import create_app
 from app.models import (
     AssetVariantRecord,
+    BillingInboxRecord,
     CreditLedgerRecord,
     CreditLotRecord,
     JobEventRecord,
+    JobRecord,
     Member,
     OrderRecord,
     ProjectGrantRecord,
+    ProviderInboxRecord,
     User,
     utcnow,
 )
@@ -87,6 +90,14 @@ def test_sandbox_confirm_feature_flag_and_auth_gating(sandbox_env, monkeypatch: 
     app, _ = sandbox_env
     unauth_client = TestClient(app)
 
+    # Runtime OpenAPI must declare Idempotency-Key as a required header on sandbox-confirm
+    spec = app.openapi()
+    confirm_params = spec["paths"]["/api/v1/billing/checkout-sessions/{checkoutId}/sandbox-confirm"]["post"]["parameters"]
+    idemp_param = next(p for p in confirm_params if p["name"] == "Idempotency-Key" and p["in"] == "header")
+    assert idemp_param["required"] is True
+    assert idemp_param["schema"]["minLength"] == 1
+    assert idemp_param["schema"]["maxLength"] == 128
+
     # Sandbox enabled, but unauthenticated -> 401 UNAUTHENTICATED
     r_unauth = unauth_client.post("/api/v1/billing/checkout-sessions/chk-nonexistent/sandbox-confirm")
     assert r_unauth.status_code == 401
@@ -124,7 +135,13 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
     assert chk["mode"] == "sandbox"
     assert chk["redirectUrl"] == f"/billing/checkout/{checkout_id}"
 
-    # 2. Other user/workspace cannot confirm -> 404 NOT_FOUND
+    # 2. Other user/workspace cannot confirm (even without Idempotency-Key, ownership check runs first -> 404 NOT_FOUND)
+    r_other_no_key = other_client.post(
+        f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+    )
+    assert r_other_no_key.status_code == 404
+    assert r_other_no_key.json()["error"]["code"] == "NOT_FOUND"
+
     r_other = other_client.post(
         f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
         headers={"Idempotency-Key": "other-attempt"},
@@ -132,7 +149,14 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
     assert r_other.status_code == 404
     assert r_other.json()["error"]["code"] == "NOT_FOUND"
 
-    # 3. Empty/whitespace Idempotency-Key when header is explicitly sent -> 400 INVALID_IDEMPOTENCY_KEY
+    # 3. Missing, empty/whitespace, or oversized Idempotency-Key on a valid visible order -> 400 INVALID_IDEMPOTENCY_KEY
+    #    Order must remain pending, and entitlements & ledger must remain completely unchanged.
+    r_missing_key = owner_client.post(
+        f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+    )
+    assert r_missing_key.status_code == 400
+    assert r_missing_key.json()["error"]["code"] == "INVALID_IDEMPOTENCY_KEY"
+
     r_bad_key = owner_client.post(
         f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
         headers={"Idempotency-Key": "   "},
@@ -140,9 +164,26 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
     assert r_bad_key.status_code == 400
     assert r_bad_key.json()["error"]["code"] == "INVALID_IDEMPOTENCY_KEY"
 
-    # 4. First confirmation (without Idempotency-Key header, or with header) settles order to paid
+    r_long_key = owner_client.post(
+        f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+        headers={"Idempotency-Key": "k" * 129},
+    )
+    assert r_long_key.status_code == 400
+    assert r_long_key.json()["error"]["code"] == "INVALID_IDEMPOTENCY_KEY"
+
+    # Verify order is still pending and no credits/entitlements were granted after the 400 rejections
+    assert owner_client.get(f"/api/v1/billing/checkout-sessions/{checkout_id}").json()["status"] == "pending"
+    bstate_before = owner_client.get("/api/v1/billing/state").json()
+    assert bstate_before["entitlements"]["availableCredits"] == 100
+    assert bstate_before["entitlements"]["watermark"] is True
+    assert bstate_before["subscription"]["state"] != "active"
+    ledger_before = owner_client.get("/api/v1/billing/ledger").json()["items"]
+    assert [e for e in ledger_before if e["orderId"] == checkout_id] == []
+
+    # 4. First valid confirmation with required Idempotency-Key settles order to paid
     r_confirm1 = owner_client.post(
         f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+        headers={"Idempotency-Key": f"sandbox-confirm-{checkout_id}"},
     )
     assert r_confirm1.status_code == 200
     confirmed1 = r_confirm1.json()
@@ -151,7 +192,7 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
     assert confirmed1["mode"] == "sandbox"
     assert confirmed1["redirectUrl"] == f"/billing/checkout/{checkout_id}"
 
-    # 5. Repeat confirmation with deterministic Idempotency-Key and another key -> still 200, no double grant
+    # 5. Repeat confirmation with same Idempotency-Key and another valid key -> still 200, no double grant
     r_confirm2 = owner_client.post(
         f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
         headers={"Idempotency-Key": f"sandbox-confirm-{checkout_id}"},
@@ -165,6 +206,13 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
     )
     assert r_confirm3.status_code == 200
     assert r_confirm3.json()["status"] == "paid"
+
+    # Even on an already-paid order, missing Idempotency-Key still returns 400 INVALID_IDEMPOTENCY_KEY
+    r_paid_no_key = owner_client.post(
+        f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+    )
+    assert r_paid_no_key.status_code == 400
+    assert r_paid_no_key.json()["error"]["code"] == "INVALID_IDEMPOTENCY_KEY"
 
     # 6. Webhook replay for the same order -> 200, no double grant
     wh_payload = json.dumps(
@@ -278,6 +326,7 @@ def test_sandbox_confirm_lifecycle_idempotency_and_states(sandbox_env):
 
     r_non_sandbox = owner_client.post(
         f"/api/v1/billing/checkout-sessions/{chk3_id}/sandbox-confirm",
+        headers={"Idempotency-Key": f"sandbox-confirm-{chk3_id}"},
     )
     assert r_non_sandbox.status_code == 404
     assert r_non_sandbox.json()["error"]["code"] == "NOT_FOUND"
@@ -669,3 +718,197 @@ def test_credit_lot_deduction_order_insufficient_credits_cancel_refund_and_sse_c
     )
     assert r_bad_wh.status_code == 400
     assert r_bad_wh.json()["error"]["code"] == "INVALID_SIGNATURE"
+
+
+def test_explicit_failure_refund_duplicate_out_of_order_webhooks_and_missing_secret_zero_side_effects(
+    sandbox_env, monkeypatch: pytest.MonkeyPatch
+):
+    app, _ = sandbox_env
+    client, _ = _login_client(app, "+8613500135001")
+
+    r_prj = client.post(
+        "/api/v1/projects",
+        json={"name": "失败退款与回调乱序回归项目", "industry": "ecommerce"},
+    )
+    assert r_prj.status_code == 201
+    project_id = r_prj.json()["id"]
+
+    r_up = client.post(
+        f"/api/v1/projects/{project_id}/assets",
+        headers={"Idempotency-Key": "upload-fail-refund-asset"},
+        data={"assetRole": "product"},
+        files={"file": ("prod.png", _make_sample_png_bytes(), "image/png")},
+    )
+    assert r_up.status_code == 201
+    asset_id = r_up.json()["id"]
+
+    # 1. Submit a job that fails during provider execution (15 credits held -> released on failure)
+    r_q_fail = client.post(
+        f"/api/v1/projects/{project_id}/quotes",
+        json={
+            "mode": "product_scene",
+            "modelId": "studio-image",
+            "prompt": "测试显式失败自动退分",
+            "inputAssetIds": [asset_id],
+            "parameters": {"aspectRatio": "1:1"},
+        },
+    )
+    assert r_q_fail.status_code == 201
+    q_fail_id = r_q_fail.json()["id"]
+
+    r_j_fail = client.post(
+        f"/api/v1/projects/{project_id}/jobs",
+        headers={"Idempotency-Key": "submit-fail-job-1"},
+        json={"quoteId": q_fail_id},
+    )
+    assert r_j_fail.status_code == 202
+    j_fail_id = r_j_fail.json()["id"]
+
+    # While queued, 15 credits are held (available=85, held=15)
+    ent_held = client.get("/api/v1/billing/state").json()["entitlements"]
+    assert ent_held["availableCredits"] == 85
+    assert ent_held["heldCredits"] == 15
+
+    # Send signed failure webhook notification
+    fail_body = json.dumps(
+        {"eventId": "evt-gen-fail-1", "jobId": j_fail_id, "status": "failed", "errorCode": "PROVIDER_TIMEOUT"}
+    ).encode("utf-8")
+    fail_sig = hmac.new(TEST_GENERATION_SECRET.encode("utf-8"), fail_body, hashlib.sha256).hexdigest()
+    r_wh_fail = client.post(
+        "/api/v1/generation/webhooks/demo-deterministic",
+        content=fail_body,
+        headers={"Content-Type": "application/json", "Provider-Signature": fail_sig},
+    )
+    assert r_wh_fail.status_code == 202
+
+    # Verify job is failed and 15 credits are refunded (available=100, held=0, spent=0)
+    j_after_fail = client.get(f"/api/v1/jobs/{j_fail_id}").json()
+    assert j_after_fail["status"] == "failed"
+    assert j_after_fail["charging"] == "released"
+    assert j_after_fail["reservedCredits"] == 0
+    assert j_after_fail["chargedCredits"] == 0
+
+    ent_released = client.get("/api/v1/billing/state").json()["entitlements"]
+    assert ent_released["availableCredits"] == 100
+    assert ent_released["heldCredits"] == 0
+    assert ent_released["spentCredits"] == 0
+
+    ledger_items = client.get("/api/v1/billing/ledger").json()["items"]
+    releases = [e for e in ledger_items if e["kind"] == "release" and e["jobId"] == j_fail_id]
+    assert len(releases) == 1
+    assert releases[0]["availableDelta"] == 15
+    assert releases[0]["heldDelta"] == -15
+
+    # 2. Duplicate failure callback & out-of-order late success callback must be no-ops (terminal CAS)
+    r_wh_fail_dup = client.post(
+        "/api/v1/generation/webhooks/demo-deterministic",
+        content=fail_body,
+        headers={"Content-Type": "application/json", "Provider-Signature": fail_sig},
+    )
+    assert r_wh_fail_dup.status_code == 202
+
+    late_succ_body = json.dumps(
+        {"eventId": "evt-gen-late-succ-after-fail", "jobId": j_fail_id, "status": "succeeded"}
+    ).encode("utf-8")
+    late_succ_sig = hmac.new(TEST_GENERATION_SECRET.encode("utf-8"), late_succ_body, hashlib.sha256).hexdigest()
+    r_wh_late_succ = client.post(
+        "/api/v1/generation/webhooks/demo-deterministic",
+        content=late_succ_body,
+        headers={"Content-Type": "application/json", "Provider-Signature": late_succ_sig},
+    )
+    assert r_wh_late_succ.status_code == 202
+
+    j_still_failed = client.get(f"/api/v1/jobs/{j_fail_id}").json()
+    assert j_still_failed["status"] == "failed"
+    assert j_still_failed["outputAssetIds"] == []
+    assert client.get("/api/v1/billing/state").json()["entitlements"]["availableCredits"] == 100
+
+    # 3. Missing or example webhook secrets must be rejected with zero DB/ledger/inbox side effects
+    r_chk = client.post(
+        "/api/v1/billing/checkout-sessions",
+        headers={"Idempotency-Key": "chk-for-secret-rejection-test"},
+        json={"itemType": "credit_pack", "offerId": "pack-500"},
+    )
+    assert r_chk.status_code == 201
+    chk_id = r_chk.json()["id"]
+
+    from sqlalchemy import select
+
+    with get_session_factory()() as db:
+        snap_before = {
+            "ledger": len(db.scalars(select(CreditLedgerRecord)).all()),
+            "lots_avail": sum(int(l.available) for l in db.scalars(select(CreditLotRecord)).all()),
+            "orders_paid": len(db.scalars(select(OrderRecord).where(OrderRecord.state == "paid")).all()),
+            "jobs_succ": len(db.scalars(select(JobRecord).where(JobRecord.state == "succeeded")).all()),
+            "billing_inbox": len(db.scalars(select(BillingInboxRecord)).all()),
+            "provider_inbox": len(db.scalars(select(ProviderInboxRecord)).all()),
+        }
+
+    pay_payload = json.dumps(
+        {
+            "eventId": "evt-unauth-pay-1",
+            "orderId": chk_id,
+            "tradeId": "trd-unauth-1",
+            "amountMinor": 4900,
+            "currency": "CNY",
+            "status": "paid",
+            "environment": "sandbox",
+        }
+    ).encode("utf-8")
+    gen_payload = json.dumps(
+        {"eventId": "evt-unauth-gen-1", "jobId": j_fail_id, "status": "succeeded"}
+    ).encode("utf-8")
+
+    # Missing secrets -> 503
+    monkeypatch.setenv("LINGMAO_PAYMENT_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("LINGMAO_GENERATION_WEBHOOK_SECRET", "")
+    assert (
+        client.post(
+            "/api/v1/billing/webhooks/sandbox-pay",
+            content=pay_payload,
+            headers={"Content-Type": "application/json", "Provider-Signature": "any"},
+        ).status_code
+        == 503
+    )
+    assert (
+        client.post(
+            "/api/v1/generation/webhooks/demo-deterministic",
+            content=gen_payload,
+            headers={"Content-Type": "application/json", "Provider-Signature": "any"},
+        ).status_code
+        == 503
+    )
+
+    # Known example secrets -> 400 INVALID_SIGNATURE even with valid HMAC
+    for placeholder in ("dev-payment-webhook-secret", "dev-generation-webhook-secret", "changeme", "example-secret"):
+        monkeypatch.setenv("LINGMAO_PAYMENT_WEBHOOK_SECRET", placeholder)
+        monkeypatch.setenv("LINGMAO_GENERATION_WEBHOOK_SECRET", placeholder)
+        p_sig = hmac.new(placeholder.encode("utf-8"), pay_payload, hashlib.sha256).hexdigest()
+        g_sig = hmac.new(placeholder.encode("utf-8"), gen_payload, hashlib.sha256).hexdigest()
+        assert (
+            client.post(
+                "/api/v1/billing/webhooks/sandbox-pay",
+                content=pay_payload,
+                headers={"Content-Type": "application/json", "Provider-Signature": p_sig},
+            ).status_code
+            == 400
+        )
+        assert (
+            client.post(
+                "/api/v1/generation/webhooks/demo-deterministic",
+                content=gen_payload,
+                headers={"Content-Type": "application/json", "Provider-Signature": g_sig},
+            ).status_code
+            == 400
+        )
+
+    with get_session_factory()() as db:
+        snap_after = {
+            "ledger": len(db.scalars(select(CreditLedgerRecord)).all()),
+            "lots_avail": sum(int(l.available) for l in db.scalars(select(CreditLotRecord)).all()),
+            "orders_paid": len(db.scalars(select(OrderRecord).where(OrderRecord.state == "paid")).all()),
+            "jobs_succ": len(db.scalars(select(JobRecord).where(JobRecord.state == "succeeded")).all()),
+            "billing_inbox": len(db.scalars(select(BillingInboxRecord)).all()),
+            "provider_inbox": len(db.scalars(select(ProviderInboxRecord)).all()),
+        }
+    assert snap_before == snap_after

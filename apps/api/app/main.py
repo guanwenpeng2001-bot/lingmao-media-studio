@@ -111,6 +111,30 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix=prefix)
     app.include_router(billing_router, prefix=prefix)
 
+    orig_openapi = app.openapi
+
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = orig_openapi()
+        confirm_op = (
+            schema.get("paths", {})
+            .get("/api/v1/billing/checkout-sessions/{checkoutId}/sandbox-confirm", {})
+            .get("post")
+        )
+        if confirm_op:
+            for param in confirm_op.get("parameters", []):
+                if param.get("in") == "header" and param.get("name") == "Idempotency-Key":
+                    param["required"] = True
+                    param["schema"] = {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    }
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
+
     return app
 
 
