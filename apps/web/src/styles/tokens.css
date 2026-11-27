@@ -1,0 +1,314 @@
+/* ==========================================================================
+   Lingmao Media Studio - Design Tokens v1.0
+   Light Mode (Default / Reference #1) & Dark Mode (Reference #2)
+   Strictly aligned with DESIGN_SYSTEM.md (Zero hardcoded colors in components)
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* 1. 背景层级 (Surfaces & Layers) */
+  --bg-canvas: #F5F6F8;
+  --bg-sidebar: #FFFFFF;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --bg-subtle: #EEF0F4;
+  --bg-muted: #F9FAFB;
+  --bg-hover: #E5E7EB;
+  --bg-active: #E0E7FF;
+  --bg-nav-active: #F3F4F6;
+  --bg-modal-overlay: rgba(15, 23, 42, 0.48);
+  --bg-banner-promo: linear-gradient(90deg, #1E1B4B 0%, #312E81 55%, #1E293B 100%);
+  --banner-promo-fg: #F3F4F6;
+  --banner-promo-chip-bg: rgba(255, 255, 255, 0.14);
+  --showcase-scrim: linear-gradient(180deg, transparent 40%, rgba(15, 23, 42, 0.84) 100%);
+  --showcase-fg: #FFFFFF;
+
+  /* 无限画布点阵与电商透明棋盘格 */
+  --canvas-board-bg: #F3F4F6;
+  --canvas-dot-color: rgba(100, 116, 139, 0.28);
+  --canvas-grid-color: rgba(100, 116, 139, 0.10);
+  --checkerboard-a: #FFFFFF;
+  --checkerboard-b: #E5E7EB;
+  --safezone-danger-fill: rgba(239, 68, 68, 0.14);
+  --safezone-danger-stroke: #EF4444;
+  --mask-keep-stroke: rgba(16, 185, 129, 0.72);
+  --mask-erase-stroke: rgba(239, 68, 68, 0.72);
+  --preview-solid-dark: #111827;
+  --preview-solid-light: #FFFFFF;
+  --shimmer-highlight: rgba(255, 255, 255, 0.60);
+
+  /* 2. 边框与分割线 (Borders & Dividers) */
+  --border-subtle: #E5E7EB;
+  --border-default: #D1D5DB;
+  --border-strong: #9CA3AF;
+  --border-focus: #0891B2;
+
+  /* 3. 文字阶梯 (Typography Hierarchy) */
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-tertiary: #6B7280;
+  --text-muted: #9CA3AF;
+  --text-inverse: #FFFFFF;
+  --text-link: #0284C7;
+
+  /* 4. 品牌强调色与营销折扣角标 (Brand & Monetization) */
+  --brand-primary: #111827;
+  --brand-primary-hover: #1F2937;
+  --brand-primary-fg: #FFFFFF;
+
+  --accent-ai: #0891B2;
+  --accent-ai-soft: rgba(8, 145, 178, 0.10);
+  --accent-ai-gradient: linear-gradient(135deg, #06B6D4 0%, #2563EB 100%);
+
+  --accent-vip: #D97706;
+  --accent-vip-bg: #FEF3C7;
+  --accent-vip-fg: #92400E;
+  --accent-vip-gradient: linear-gradient(90deg, #F59E0B 0%, #EA580C 100%);
+
+  --badge-hot-bg: #FFF7ED;
+  --badge-hot-fg: #EA580C;
+  --badge-new-bg: #ECFEFF;
+  --badge-new-fg: #0E7490;
+  --badge-beta-bg: #EEF2FF;
+  --badge-beta-fg: #4338CA;
+  --badge-discount-bg: #DC2626;
+  --badge-discount-fg: #FFFFFF;
+
+  /* 5. 多额度池区分色 (Billing Credit Pools) */
+  --pool-grant: #0891B2;
+  --pool-subscription: #2563EB;
+  --pool-topup: #059669;
+
+  /* 6. 语义状态色 (Task / Canvas / Compliance / Graph Edges) */
+  --status-queued-fg: #475569;
+  --status-queued-bg: #F1F5F9;
+  --status-queued-border: #CBD5E1;
+
+  --status-running-fg: #0369A1;
+  --status-running-bg: #E0F2FE;
+  --status-running-border: #7DD3FC;
+
+  --status-success-fg: #047857;
+  --status-success-bg: #ECFDF5;
+  --status-success-border: #6EE7B7;
+
+  --status-failed-fg: #B91C1C;
+  --status-failed-bg: #FEF2F2;
+  --status-failed-border: #FCA5A5;
+
+  --status-cancelled-fg: #6B7280;
+  --status-cancelled-bg: #F3F4F6;
+  --status-cancelled-border: #D1D5DB;
+
+  --status-stale-fg: #B45309;
+  --status-stale-bg: #FFFBEB;
+  --status-stale-border: #FCD34D;
+
+  --status-readonly-fg: #4B5563;
+  --status-readonly-bg: #F3F4F6;
+  --status-readonly-border: #D1D5DB;
+
+  --status-compliance-fg: #C2410C;
+  --status-compliance-bg: #FFF7ED;
+  --status-compliance-border: #FDBA74;
+
+  /* 画布连线与防环拦截 */
+  --edge-default: #94A3B8;
+  --edge-hover: #64748B;
+  --edge-selected: #0891B2;
+  --edge-running: #0284C7;
+  --edge-stale: #F59E0B;
+  --edge-invalid: #EF4444;
+  --edge-invalid-bg: #FEE2E2;
+
+  /* 7. 海拔阴影 (Elevation) */
+  --shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-card: 0 1px 3px rgba(17, 24, 39, 0.06), 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-node: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-popover: 0 10px 28px rgba(15, 23, 42, 0.14);
+  --shadow-modal: 0 20px 48px rgba(15, 23, 42, 0.22);
+  --glow-node-selected: 0 0 0 2px #0891B2, 0 8px 20px rgba(8, 145, 178, 0.18);
+  --glow-node-running: 0 0 0 2px #0284C7, 0 0 16px rgba(2, 132, 199, 0.28);
+  --glow-node-failed: 0 0 0 2px #EF4444, 0 4px 12px rgba(239, 68, 68, 0.18);
+  --glow-node-stale: 0 0 0 2px #F59E0B, 0 4px 12px rgba(245, 158, 11, 0.18);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0B0C10;
+  --bg-sidebar: #101218;
+  --bg-surface: #14161D;
+  --bg-elevated: #1C1F2A;
+  --bg-subtle: #1D2029;
+  --bg-muted: #181B24;
+  --bg-hover: #262A36;
+  --bg-active: rgba(34, 211, 238, 0.12);
+  --bg-nav-active: #1E222D;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.72);
+  --bg-banner-promo: linear-gradient(90deg, #0F172A 0%, #16243D 50%, #111827 100%);
+  --banner-promo-fg: #F3F4F6;
+  --banner-promo-chip-bg: rgba(255, 255, 255, 0.12);
+  --showcase-scrim: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, 0.86) 100%);
+  --showcase-fg: #F3F4F6;
+
+  --canvas-board-bg: #0B0C10;
+  --canvas-dot-color: rgba(148, 163, 184, 0.18);
+  --canvas-grid-color: rgba(148, 163, 184, 0.07);
+  --checkerboard-a: #FFFFFF;
+  --checkerboard-b: #E5E7EB;
+  --safezone-danger-fill: rgba(239, 68, 68, 0.16);
+  --safezone-danger-stroke: #F87171;
+  --mask-keep-stroke: rgba(52, 211, 153, 0.78);
+  --mask-erase-stroke: rgba(248, 113, 113, 0.78);
+  --preview-solid-dark: #0B0C10;
+  --preview-solid-light: #FFFFFF;
+  --shimmer-highlight: rgba(255, 255, 255, 0.06);
+
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-default: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  --border-focus: #22D3EE;
+
+  --text-primary: #F3F4F6;
+  --text-secondary: #A1A7B3;
+  --text-tertiary: #7D8594;
+  --text-muted: #5B6270;
+  --text-inverse: #0B0C10;
+  --text-link: #38BDF8;
+
+  --brand-primary: #22D3EE;
+  --brand-primary-hover: #06B6D4;
+  --brand-primary-fg: #082F49;
+
+  --accent-ai: #22D3EE;
+  --accent-ai-soft: rgba(34, 211, 238, 0.14);
+  --accent-ai-gradient: linear-gradient(135deg, #22D3EE 0%, #3B82F6 100%);
+
+  --accent-vip: #FBBF24;
+  --accent-vip-bg: rgba(245, 158, 11, 0.16);
+  --accent-vip-fg: #FDE68A;
+  --accent-vip-gradient: linear-gradient(90deg, #F59E0B 0%, #FB7185 100%);
+
+  --badge-hot-bg: rgba(249, 115, 22, 0.18);
+  --badge-hot-fg: #FB923C;
+  --badge-new-bg: rgba(34, 211, 238, 0.16);
+  --badge-new-fg: #22D3EE;
+  --badge-beta-bg: rgba(99, 102, 241, 0.20);
+  --badge-beta-fg: #A5B4FC;
+  --badge-discount-bg: #EF4444;
+  --badge-discount-fg: #FFFFFF;
+
+  --pool-grant: #22D3EE;
+  --pool-subscription: #60A5FA;
+  --pool-topup: #34D399;
+
+  --status-queued-fg: #94A3B8;
+  --status-queued-bg: rgba(148, 163, 184, 0.12);
+  --status-queued-border: rgba(148, 163, 184, 0.28);
+
+  --status-running-fg: #38BDF8;
+  --status-running-bg: rgba(56, 189, 248, 0.14);
+  --status-running-border: rgba(56, 189, 248, 0.36);
+
+  --status-success-fg: #34D399;
+  --status-success-bg: rgba(16, 185, 129, 0.14);
+  --status-success-border: rgba(52, 211, 153, 0.36);
+
+  --status-failed-fg: #F87171;
+  --status-failed-bg: rgba(239, 68, 68, 0.14);
+  --status-failed-border: rgba(248, 113, 113, 0.38);
+
+  --status-cancelled-fg: #9CA3AF;
+  --status-cancelled-bg: rgba(156, 163, 175, 0.12);
+  --status-cancelled-border: rgba(156, 163, 175, 0.24);
+
+  --status-stale-fg: #FBBF24;
+  --status-stale-bg: rgba(245, 158, 11, 0.16);
+  --status-stale-border: rgba(251, 191, 36, 0.42);
+
+  --status-readonly-fg: #9CA3AF;
+  --status-readonly-bg: rgba(255, 255, 255, 0.08);
+  --status-readonly-border: rgba(255, 255, 255, 0.16);
+
+  --status-compliance-fg: #FB923C;
+  --status-compliance-bg: rgba(249, 115, 22, 0.16);
+  --status-compliance-border: rgba(251, 146, 60, 0.40);
+
+  --edge-default: #4B5563;
+  --edge-hover: #9CA3AF;
+  --edge-selected: #22D3EE;
+  --edge-running: #38BDF8;
+  --edge-stale: #FBBF24;
+  --edge-invalid: #F87171;
+  --edge-invalid-bg: rgba(239, 68, 68, 0.20);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.36);
+  --shadow-node: 0 6px 18px rgba(0, 0, 0, 0.48);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.64);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.80);
+  --glow-node-selected: 0 0 0 2px #22D3EE, 0 0 20px rgba(34, 211, 238, 0.24);
+  --glow-node-running: 0 0 0 2px #38BDF8, 0 0 22px rgba(56, 189, 248, 0.34);
+  --glow-node-failed: 0 0 0 2px #F87171, 0 0 16px rgba(248, 113, 113, 0.24);
+  --glow-node-stale: 0 0 0 2px #FBBF24, 0 0 16px rgba(251, 191, 36, 0.22);
+}
+
+:root {
+  /* 节点头部与端口模态编码色 */
+  --node-prompt: #6366F1;
+  --node-media: #0EA5E9;
+  --node-subject: #10B981;
+  --node-image: #06B6D4;
+  --node-video: #8B5CF6;
+  --node-batch: #EC4899;
+  --node-audio-p1: #6B7280;
+
+  /* 字体族 */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Consolas, monospace;
+
+  /* 间距与壳层尺寸 */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --promo-bar-height: 36px;
+  --topbar-height: 56px;
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+  --task-drawer-width: 420px;
+
+  /* 圆角 */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+  --radius-full: 9999px;
+
+  /* Z-Index 分层 */
+  --z-canvas-bg: 0;
+  --z-canvas-edges: 5;
+  --z-canvas-nodes: 10;
+  --z-canvas-hud: 20;
+  --z-shell: 30;
+  --z-drawer: 40;
+  --z-popover: 50;
+  --z-modal: 60;
+  --z-toast: 70;
+
+  /* 动效曲线 */
+  --duration-fast: 120ms;
+  --duration-base: 160ms;
+  --duration-slow: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
