@@ -11,6 +11,10 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 }
 
+if (typeof window !== 'undefined' && typeof window.PointerEvent === 'undefined') {
+  (window as unknown as { PointerEvent: typeof MouseEvent }).PointerEvent = window.MouseEvent;
+}
+
 if (typeof window !== 'undefined' && !window.matchMedia) {
   window.matchMedia = () =>
     ({

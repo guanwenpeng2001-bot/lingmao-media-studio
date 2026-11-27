@@ -23,7 +23,7 @@ export interface Session {
   displayName: string;
   workspaceId: string;
   role: 'owner' | 'editor' | 'viewer';
-  mode: 'live' | 'sandbox' | 'demo';
+  mode: 'live' | 'sandbox';
   features: FeatureFlags;
 }
 

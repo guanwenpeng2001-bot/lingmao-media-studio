@@ -474,6 +474,15 @@ export const api = {
   getCheckout(checkoutId: string): Promise<Checkout> {
     return requestJson(`/billing/checkout-sessions/${encodeURIComponent(checkoutId)}`);
   },
+  getCheckoutSession(checkoutId: string): Promise<Checkout> {
+    return requestJson(`/billing/checkout-sessions/${encodeURIComponent(checkoutId)}`);
+  },
+  sandboxConfirmCheckout(checkoutId: string): Promise<Checkout> {
+    return requestJson(
+      `/billing/checkout-sessions/${encodeURIComponent(checkoutId)}/sandbox-confirm`,
+      { method: 'POST' }
+    );
+  },
   stopRenewal(idempotencyKey?: string): Promise<BillingState> {
     return requestJson('/billing/subscription/stop-renewal', {
       method: 'POST',

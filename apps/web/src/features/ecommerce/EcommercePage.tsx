@@ -989,6 +989,8 @@ export const EcommercePage: React.FC = () => {
             ) : showBrushEditor ? (
               <MaskBrushEditor
                 imageUrl={api.getAssetContentUrl(currentPrimaryAssetId, 'preview')}
+                initialWidth={uploadedAsset?.width ?? undefined}
+                initialHeight={uploadedAsset?.height ?? undefined}
                 saving={savingMask}
                 onSaveMask={handleSaveFreeMask}
               />

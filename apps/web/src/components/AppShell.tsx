@@ -643,6 +643,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/projects')) return '项目管理';
   if (pathname.startsWith('/assets')) return '资产与主体中心';
   if (pathname.startsWith('/tasks')) return '全局异步任务管理';
+  if (pathname.startsWith('/billing/checkout')) return '沙盒收银台确认';
   if (pathname.startsWith('/billing')) return '会员订阅与用量管理';
   if (pathname.startsWith('/org')) return '组织与空间管理';
   return '灵猫多模态内容生成工作台';

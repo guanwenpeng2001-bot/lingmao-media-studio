@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Copy, Crown, ExternalLink, RefreshCw, Sparkles, X } from 'lucide-react';
 import { api, generateIdempotencyKey, isApiClientError } from '../api/client';
 import type { Checkout, CreditPack, Plan } from '../api/types';
@@ -15,6 +16,7 @@ export const CashierDrawer: React.FC = () => {
     pushToast,
     handleApiError,
   } = useApp();
+  const navigate = useNavigate();
 
   const [tab, setTab] = useState<'plans' | 'packs'>('plans');
   const [interval, setIntervalFilter] = useState<'month' | 'quarter' | 'year'>('year');
@@ -89,6 +91,12 @@ export const CashierDrawer: React.FC = () => {
         { itemType, offerId },
         generateIdempotencyKey(`checkout-${offerId}`)
       );
+      // Same-origin relative path (e.g. /billing/checkout/{checkoutId}) uses React Router navigation
+      if (created.redirectUrl && created.redirectUrl.startsWith('/')) {
+        closeCashierDrawer();
+        navigate(created.redirectUrl);
+        return;
+      }
       setCheckout(created);
       if (created.status === 'paid') {
         await refreshBillingState();

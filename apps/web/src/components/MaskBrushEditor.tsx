@@ -1,20 +1,72 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Brush, Check, Eraser, RotateCcw, Sparkles } from 'lucide-react';
 
+export interface MaskDimensions {
+  width: number;
+  height: number;
+}
+
+export const DEFAULT_MASK_DIMENSIONS: MaskDimensions = { width: 512, height: 512 };
+
+/**
+ * Pure helper: normalize source image dimensions (fallback safely when unavailable, e.g. JSDOM).
+ */
+export function resolveMaskDimensions(
+  naturalWidth?: number,
+  naturalHeight?: number
+): MaskDimensions {
+  const w = naturalWidth && naturalWidth > 0 ? Math.round(naturalWidth) : DEFAULT_MASK_DIMENSIONS.width;
+  const h = naturalHeight && naturalHeight > 0 ? Math.round(naturalHeight) : DEFAULT_MASK_DIMENSIONS.height;
+  return { width: w, height: h };
+}
+
+/**
+ * Pure helper: compute CSS aspect-ratio string from natural image dimensions.
+ */
+export function formatAspectRatioCss(dims: MaskDimensions): string {
+  return `${dims.width} / ${dims.height}`;
+}
+
+/**
+ * Pure helper: convert pointer client coordinates against rendered canvas rect into exact source-image pixel coordinates.
+ */
+export function mapPointerToCanvasCoords(
+  clientX: number,
+  clientY: number,
+  rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>,
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number; scaleX: number; scaleY: number } {
+  const safeRectW = Math.max(1, rect.width);
+  const safeRectH = Math.max(1, rect.height);
+  const scaleX = canvasWidth / safeRectW;
+  const scaleY = canvasHeight / safeRectH;
+  const x = (clientX - rect.left) * scaleX;
+  const y = (clientY - rect.top) * scaleY;
+  return { x, y, scaleX, scaleY };
+}
+
 interface MaskBrushEditorProps {
   imageUrl: string;
-  onSaveMask: (blob: Blob) => Promise<void> | void;
+  initialWidth?: number;
+  initialHeight?: number;
+  onSaveMask: (blob: Blob, dims: MaskDimensions) => Promise<void> | void;
   saving?: boolean;
   saveLabel?: string;
 }
 
 export const MaskBrushEditor: React.FC<MaskBrushEditorProps> = ({
   imageUrl,
+  initialWidth,
+  initialHeight,
   onSaveMask,
   saving = false,
   saveLabel = '保存蒙版（0 积分）',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [dims, setDims] = useState<MaskDimensions>(() =>
+    resolveMaskDimensions(initialWidth, initialHeight)
+  );
   const [tool, setTool] = useState<'keep' | 'erase'>('keep');
   const [brushSize, setBrushSize] = useState(24);
   const [bgMode, setBgMode] = useState<'checker' | 'dark' | 'light'>('checker');
@@ -31,24 +83,37 @@ export const MaskBrushEditor: React.FC<MaskBrushEditorProps> = ({
   };
 
   useEffect(() => {
-    resetCanvas();
-  }, [imageUrl]);
+    setDims(resolveMaskDimensions(initialWidth, initialHeight));
+  }, [imageUrl, initialWidth, initialHeight]);
 
-  const getCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width,
-      y: ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height,
-    };
+  // Clear mask whenever source image or canvas dimensions change
+  useEffect(() => {
+    resetCanvas();
+  }, [imageUrl, dims.width, dims.height]);
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const next = resolveMaskDimensions(img.naturalWidth, img.naturalHeight);
+      setDims((prev) =>
+        prev.width === next.width && prev.height === next.height ? prev : next
+      );
+    }
   };
 
-  const drawDot = (x: number, y: number) => {
+  const drawAtPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const { x, y, scaleX, scaleY } = mapPointerToCanvasCoords(
+      e.clientX,
+      e.clientY,
+      rect,
+      canvas.width,
+      canvas.height
+    );
     hasStrokesRef.current = true;
     ctx.save();
     ctx.lineCap = 'round';
@@ -57,23 +122,27 @@ export const MaskBrushEditor: React.FC<MaskBrushEditorProps> = ({
     const keepColor = rootStyles.getPropertyValue('--mask-keep-stroke').trim() || 'currentColor';
     const eraseColor = rootStyles.getPropertyValue('--mask-erase-stroke').trim() || 'currentColor';
     ctx.fillStyle = tool === 'keep' ? keepColor : eraseColor;
+    const avgScale = (scaleX + scaleY) / 2;
+    const radius = (brushSize * avgScale) / 2;
     ctx.beginPath();
-    ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+    ctx.arc(x, y, Math.max(1, radius), 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     drawingRef.current = true;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const { x, y } = getCoords(e);
-    drawDot(x, y);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore synthetic events without active pointerId
+    }
+    drawAtPointer(e);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawingRef.current) return;
-    const { x, y } = getCoords(e);
-    drawDot(x, y);
+    drawAtPointer(e);
   };
 
   const handlePointerUp = () => {
@@ -83,10 +152,11 @@ export const MaskBrushEditor: React.FC<MaskBrushEditorProps> = ({
   const handleExport = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const currentDims = { width: canvas.width, height: canvas.height };
     canvas.toBlob(
       (blob) => {
         if (blob) {
-          void onSaveMask(blob);
+          void onSaveMask(blob, currentDims);
         }
       },
       'image/png'
@@ -184,36 +254,48 @@ export const MaskBrushEditor: React.FC<MaskBrushEditorProps> = ({
         </div>
       </div>
 
-      {/* Interactive Canvas 2D Mask Stage */}
-      <div
-        className={`relative mx-auto aspect-square w-full max-w-[420px] overflow-hidden rounded-xl border border-line-default ${
-          bgMode === 'checker' ? 'checkerboard-bg' : ''
-        }`}
-        style={bgStyle}
-      >
-        <img
-          src={imageUrl}
-          alt="待微调商品图"
-          className="pointer-events-none h-full w-full object-contain select-none"
-        />
-        <canvas
-          ref={canvasRef}
-          width={512}
-          height={512}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerUp}
-          className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
-        />
+      {/* Adaptive-Ratio Canvas 2D Mask Stage: 1:1 pixel alignment with source image */}
+      <div className="flex justify-center">
+        <div
+          data-testid="mask-brush-stage"
+          className={`relative w-full max-w-[460px] max-h-[520px] overflow-hidden rounded-xl border border-line-default ${
+            bgMode === 'checker' ? 'checkerboard-bg' : ''
+          }`}
+          style={{
+            ...bgStyle,
+            aspectRatio: formatAspectRatioCss(dims),
+          }}
+        >
+          <img
+            data-testid="mask-source-image"
+            src={imageUrl}
+            alt="待微调商品图"
+            onLoad={handleImageLoad}
+            className="pointer-events-none block h-full w-full select-none"
+          />
+          <canvas
+            ref={canvasRef}
+            data-testid="mask-brush-canvas"
+            width={dims.width}
+            height={dims.height}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerUp}
+            className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+          />
+        </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between text-[11px] text-ink-tertiary tabular-metric">
+        <span data-testid="mask-resolution-label">
+          蒙版导出分辨率：{dims.width} × {dims.height} px（与原图 1:1 对齐）
+        </span>
         <button
           type="button"
           disabled={saving}
           onClick={handleExport}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-50 font-sans"
         >
           <Check className="h-3.5 w-3.5" />
           <span>{saving ? '正在保存蒙版资产...' : saveLabel}</span>

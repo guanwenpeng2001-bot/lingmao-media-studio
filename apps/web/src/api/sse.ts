@@ -20,10 +20,10 @@ export function isTerminalJobStatus(status: string): boolean {
 
 /**
  * Manages SSE /api/v1/events/jobs subscription with:
- * - eventId deduplication
- * - monotonic revision guard
- * - Last-Event-ID reconnect via fetch streaming / EventSource
- * - exponential backoff polling fallback when SSE disconnects or is unsupported
+ * - Native EventSource auto-reconnect & Last-Event-ID header preservation while CONNECTING
+ * - Exponential backoff rebuild with ?lastEventId= query param only when CLOSED
+ * - eventId deduplication & monotonic job revision guard
+ * - Exponential backoff polling fallback when EventSource is unavailable
  */
 export class JobEventStream {
   private seenEventIds = new Set<string>();
@@ -38,6 +38,10 @@ export class JobEventStream {
 
   constructor(options: JobStreamOptions) {
     this.options = options;
+  }
+
+  getLastEventId(): string | null {
+    return this.lastEventId;
   }
 
   start(): void {
@@ -69,6 +73,13 @@ export class JobEventStream {
     try {
       const ev = JSON.parse(raw) as JobEvent;
       if (!ev || typeof ev.eventId !== 'string' || typeof ev.jobId !== 'string') return;
+
+      // Always advance latest cursor (prefer SSE event.lastEventId, fallback to JobEvent.eventId)
+      const cursorCandidate = idHeader && idHeader.trim() !== '' ? idHeader : ev.eventId;
+      if (cursorCandidate) {
+        this.lastEventId = cursorCandidate;
+      }
+
       if (this.seenEventIds.has(ev.eventId)) return;
       this.seenEventIds.add(ev.eventId);
       if (this.seenEventIds.size > 2000) {
@@ -83,11 +94,16 @@ export class JobEventStream {
       if (typeof ev.revision === 'number') {
         this.latestRevisionByJob.set(ev.jobId, ev.revision);
       }
-      this.lastEventId = idHeader || ev.eventId;
       this.options.onJobEvent(ev);
     } catch {
       // ignore malformed SSE chunk
     }
+  }
+
+  private buildSseUrl(): string {
+    return this.lastEventId
+      ? `${API_BASE}/events/jobs?lastEventId=${encodeURIComponent(this.lastEventId)}`
+      : `${API_BASE}/events/jobs`;
   }
 
   private connectSse(): void {
@@ -97,9 +113,7 @@ export class JobEventStream {
       return;
     }
 
-    const url = this.lastEventId
-      ? `${API_BASE}/events/jobs?lastEventId=${encodeURIComponent(this.lastEventId)}`
-      : `${API_BASE}/events/jobs`;
+    const url = this.buildSseUrl();
 
     try {
       const es = new EventSource(url, { withCredentials: true });
@@ -116,15 +130,31 @@ export class JobEventStream {
 
       es.onmessage = onMsg;
       es.addEventListener('job', onMsg as EventListener);
+      es.addEventListener('job.updated', onMsg as EventListener);
 
       es.onerror = () => {
         this.options.onConnectionChange?.(false);
-        es.close();
-        this.eventSource = null;
         if (this.stopped) return;
-        // Reconcile state via GET /jobs and schedule reconnect with exponential backoff
+
+        // Reconcile state via GET /jobs while recovering
         void this.options.onSyncFallback().catch(() => false);
-        this.scheduleReconnect();
+
+        const closedState = typeof EventSource.CLOSED === 'number' ? EventSource.CLOSED : 2;
+        const connectingState =
+          typeof EventSource.CONNECTING === 'number' ? EventSource.CONNECTING : 0;
+
+        // Preserve browser native auto-reconnect + Last-Event-ID header when still CONNECTING
+        if (es.readyState === connectingState) {
+          return;
+        }
+
+        // Only rebuild with exponential backoff + ?lastEventId=... when EventSource is CLOSED
+        if (es.readyState === closedState) {
+          if (this.eventSource === es) {
+            this.eventSource = null;
+          }
+          this.scheduleReconnect();
+        }
       };
     } catch {
       this.startPollingFallback();

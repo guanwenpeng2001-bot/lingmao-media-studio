@@ -11,7 +11,7 @@ const demoP0Session: Session = {
   displayName: 'P0 测试用户',
   workspaceId: 'ws-p0',
   role: 'owner',
-  mode: 'demo',
+  mode: 'sandbox',
   features: {
     virtual_tryon: false,
     org_collaboration: false,

@@ -424,6 +424,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
+      if (err.status === 409 && err.code === 'QUOTE_USED') {
+        const d = err.details || {};
+        const existingJobId =
+          typeof d.existingJobId === 'string' && d.existingJobId.length > 0
+            ? d.existingJobId
+            : typeof d.jobId === 'string' && d.jobId.length > 0
+              ? d.jobId
+              : null;
+        pushToast({
+          tone: 'info',
+          title: '该报价已提交为任务，已定位到原任务进度',
+          description: existingJobId ? `原任务编号：${existingJobId}` : '请前往任务抽屉查看最新进度。',
+        });
+        if (existingJobId) {
+          void api
+            .getJob(existingJobId)
+            .then((existingJob) => {
+              upsertJob(existingJob);
+              setTaskDrawerOpen(true);
+            })
+            .catch(() => {
+              setTaskDrawerOpen(true);
+            });
+        } else {
+          setTaskDrawerOpen(true);
+        }
+        return;
+      }
+
       if (err.status === 409 && err.code === 'INSUFFICIENT_CREDITS') {
         const d = err.details || {};
         const available =
@@ -496,7 +525,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         description: `${err.message}${err.requestId ? ` · Req: ${err.requestId}` : ''}`,
       });
     },
-    [billingState, openCashierDrawer, openInsufficientCreditsModal, openLoginModal, pushToast]
+    [
+      billingState,
+      openCashierDrawer,
+      openInsufficientCreditsModal,
+      openLoginModal,
+      pushToast,
+      upsertJob,
+    ]
   );
 
   // Global keyboard shortcut '?' for shortcuts dialog
@@ -527,7 +563,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [session]);
 
   const isDemoMode = useMemo(() => {
-    if (session?.mode === 'demo' || session?.mode === 'sandbox') return true;
+    if (session?.mode === 'sandbox') return true;
     if (models.some((m) => m.execution === 'demo')) return true;
     if (billingState?.checkoutMode === 'sandbox') return true;
     return false;
