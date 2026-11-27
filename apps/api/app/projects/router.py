@@ -24,6 +24,7 @@ from app.models import (
     Project,
     SubjectRecord,
     TemplateRecord,
+    Workspace,
     utcnow,
 )
 from app.schemas import (
@@ -318,6 +319,10 @@ def list_canvases(
     ctx: AuthContext = Depends(get_current_context),
     db: Session = Depends(get_db),
 ) -> CanvasPage:
+    if scope in ("personal", "team"):
+        ws = db.get(Workspace, ctx.workspace_id)
+        if ws and ws.kind != scope:
+            return CanvasPage(items=[], nextCursor=None, total=0)
     stmt = select(CanvasRecord).where(CanvasRecord.workspace_id == ctx.workspace_id)
     if project_id:
         stmt = stmt.where(CanvasRecord.project_id == project_id)

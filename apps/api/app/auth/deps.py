@@ -122,14 +122,14 @@ def get_effective_project_permissions(
     project_id: str,
 ) -> tuple[str, bool, bool]:
     role = ctx.role
-    allow_copy = True
-    allow_download = True
+    allow_copy = role != "viewer"
+    allow_download = role != "viewer"
     grant = db.get(ProjectGrantRecord, (project_id, ctx.user_id))
     if grant is not None:
         if role != "owner":
             role = grant.role
-        allow_copy = grant.allow_copy
-        allow_download = grant.allow_download
+            allow_copy = grant.allow_copy
+            allow_download = grant.allow_download
     return role, allow_copy, allow_download
 
 

@@ -28,6 +28,8 @@ from app.schemas import (
     Node,
     NodeConfig,
     Parameters,
+    PortraitOptionsOut,
+    PortraitOut,
     Position,
     PresetOut,
     Shot,
@@ -157,24 +159,24 @@ def get_platform_presets(
     ]
 
 
-@router.get("/ecommerce/portraits")
+@router.get("/ecommerce/portraits", response_model=list[PortraitOut])
 def get_portrait_catalog(
     ctx: AuthContext = Depends(get_current_context),
     db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
+) -> list[PortraitOut]:
     settings = get_settings()
     if not settings.feature_virtual_tryon:
         raise AppError(404, "FEATURE_DISABLED", "虚拟模特与试穿功能 (virtual_tryon) 在当前版本未启用")
     rows = list(db.scalars(select(PortraitCatalogRecord).order_by(PortraitCatalogRecord.id.asc())).all())
     return [
-        {
-            "id": r.id,
-            "label": r.label,
-            "previewUrl": r.preview_asset,
-            "licenseVersion": r.license_version,
-            "usage": list(r.allowed_uses or ["try_on"]),
-            "options": r.attributes,
-        }
+        PortraitOut(
+            id=r.id,
+            label=r.label,
+            previewUrl=r.preview_asset,
+            licenseVersion=r.license_version,
+            usage=list(r.allowed_uses or ["try_on"]),  # type: ignore[arg-type]
+            options=PortraitOptionsOut.model_validate(r.attributes or {}),
+        )
         for r in rows
     ]
 

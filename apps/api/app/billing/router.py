@@ -213,6 +213,14 @@ def begin_checkout(
             OfferRecord.active.is_(True),
         )
     )
+    if not offer and not body.offerId.startswith("plan-"):
+        offer = db.scalar(
+            select(OfferRecord).where(
+                OfferRecord.id == f"plan-{body.offerId}",
+                OfferRecord.type == body.itemType,
+                OfferRecord.active.is_(True),
+            )
+        )
     if not offer:
         raise AppError(404, "NOT_FOUND", f"套餐或积分包 {body.offerId} 不存在")
 
@@ -222,7 +230,7 @@ def begin_checkout(
         id=order_id,
         workspace_id=ctx.workspace_id,
         actor=ctx.user_id,
-        offer_id=offer.id,
+        offer_id=body.offerId,
         offer_version=offer.version,
         item_type=body.itemType,
         provider="sandbox-pay" if mode == "sandbox" else "live-pay",
@@ -231,7 +239,7 @@ def begin_checkout(
         currency=offer.currency,
         state="pending",
         provider_trade_id=None,
-        redirect_url=f"/billing/checkout/{order_id}?mode={mode}",
+        redirect_url=f"/billing/checkout/{order_id}",
         expires_at=now + timedelta(minutes=30),
         created_at=now,
     )
@@ -253,6 +261,7 @@ def get_checkout(
         select(OrderRecord).where(
             OrderRecord.id == checkoutId,
             OrderRecord.workspace_id == ctx.workspace_id,
+            OrderRecord.actor == ctx.user_id,
         )
     )
     if not order:
@@ -260,6 +269,164 @@ def get_checkout(
     if order.state == "pending" and order.expires_at <= utcnow():
         order.state = "expired"
         db.commit()
+    return _order_to_checkout(order)
+
+
+def _settle_paid_order_tx(
+    db: Session,
+    order: OrderRecord,
+    trade_id: str,
+    now: datetime,
+) -> None:
+    lock_workspace_usage(db, order.workspace_id)
+    offer = db.get(OfferRecord, (order.offer_id, order.offer_version)) or (
+        db.get(OfferRecord, (f"plan-{order.offer_id}", order.offer_version))
+        if not order.offer_id.startswith("plan-")
+        else None
+    )
+    if not offer:
+        raise AppError(400, "OFFER_NOT_FOUND", "订单关联商品目录不存在")
+
+    was_already_paid = order.state == "paid"
+    if not was_already_paid:
+        order.state = "paid"
+        order.provider_trade_id = trade_id
+
+    expires_days = offer.expires_in_days or 30
+    expires_at = now + timedelta(days=expires_days)
+    source = "subscription" if order.item_type == "subscription" else "pack"
+    grant_credit_lot(
+        db=db,
+        workspace_id=order.workspace_id,
+        source=source,
+        grant_key=f"order:{order.id}",
+        credits=int(offer.credits),
+        expires_at=expires_at,
+        order_id=order.id,
+    )
+
+    if order.item_type == "subscription" and not was_already_paid:
+        sub = db.scalar(
+            select(SubscriptionRecord)
+            .where(SubscriptionRecord.workspace_id == order.workspace_id)
+            .with_for_update()
+        )
+        if not sub:
+            sub = SubscriptionRecord(
+                id=f"sub-{uuid.uuid4().hex[:12]}",
+                workspace_id=order.workspace_id,
+                plan_id=order.offer_id,
+                provider_sub_id=trade_id,
+                offer_version=offer.version,
+                state="active",
+                period_start=now,
+                period_end=expires_at,
+                cancel_at_period_end=False,
+                updated_at=now,
+            )
+            db.add(sub)
+        else:
+            sub.plan_id = order.offer_id
+            sub.provider_sub_id = trade_id
+            sub.offer_version = offer.version
+            sub.state = "active"
+            sub.period_start = now
+            sub.period_end = expires_at
+            sub.cancel_at_period_end = False
+            sub.updated_at = now
+
+
+@router.post("/billing/checkout-sessions/{checkoutId}/sandbox-confirm", response_model=CheckoutOut)
+def confirm_sandbox_checkout(
+    checkoutId: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+) -> CheckoutOut:
+    settings = get_settings()
+    if not settings.is_sandbox_billing:
+        raise AppError(404, "FEATURE_DISABLED", "当前环境未启用沙盒支付")
+
+    ctx = get_current_context(request, db)
+
+    order = db.scalar(
+        select(OrderRecord)
+        .where(
+            OrderRecord.id == checkoutId,
+            OrderRecord.workspace_id == ctx.workspace_id,
+            OrderRecord.actor == ctx.user_id,
+            OrderRecord.mode == "sandbox",
+        )
+        .with_for_update()
+    )
+    if not order:
+        raise AppError(404, "NOT_FOUND", "未找到订单")
+    if ctx.role == "viewer":
+        raise AppError(403, "READ_ONLY", "只读成员不能确认支付")
+
+    if idempotency_key is not None:
+        raw_key = idempotency_key.strip()
+        if not raw_key or len(raw_key) > 128:
+            raise AppError(400, "INVALID_IDEMPOTENCY_KEY", "确认请求需要有效的幂等键")
+    else:
+        raw_key = ""
+
+    lock_workspace_usage(db, ctx.workspace_id)
+    digest = canonical_digest({"checkoutId": order.id})
+    existing = (
+        check_request_idempotency(
+            db,
+            ctx.workspace_id,
+            ctx.user_id,
+            "confirmSandboxCheckout",
+            "billing",
+            raw_key,
+            digest,
+        )
+        if raw_key
+        else None
+    )
+
+    if order.state == "paid":
+        if raw_key and existing is None:
+            save_request_idempotency(
+                db,
+                ctx.workspace_id,
+                ctx.user_id,
+                "confirmSandboxCheckout",
+                "billing",
+                raw_key,
+                digest,
+                order.id,
+                200,
+            )
+            db.commit()
+        return _order_to_checkout(order)
+
+    if order.state == "cancelled":
+        raise AppError(409, "CHECKOUT_CANCELLED", "订单已取消")
+
+    now = utcnow()
+    if order.state == "expired" or (order.state == "pending" and order.expires_at <= now):
+        if order.state == "pending":
+            order.state = "expired"
+            db.commit()
+        raise AppError(410, "CHECKOUT_EXPIRED", "订单已过期，请重新创建订单")
+
+    _settle_paid_order_tx(db, order, trade_id=f"sbx-trd-{order.id}", now=now)
+    if raw_key and existing is None:
+        save_request_idempotency(
+            db,
+            ctx.workspace_id,
+            ctx.user_id,
+            "confirmSandboxCheckout",
+            "billing",
+            raw_key,
+            digest,
+            order.id,
+            200,
+        )
+    db.commit()
     return _order_to_checkout(order)
 
 
@@ -369,54 +536,7 @@ async def receive_payment_event(
         raise AppError(400, "OFFER_NOT_FOUND", "订单关联商品目录不存在")
 
     if trade_status == "paid":
-        # Even if a duplicate payment webhook arrives with a DIFFERENT eventId,
-        # order.state and grant_credit_lot(grant_key=f"order:{order.id}") guarantee single grant!
-        if order.state != "paid":
-            order.state = "paid"
-            order.provider_trade_id = trade_id
-
-        expires_days = offer.expires_in_days or 30
-        expires_at = now + timedelta(days=expires_days)
-        source = "subscription" if order.item_type == "subscription" else "pack"
-        grant_credit_lot(
-            db=db,
-            workspace_id=order.workspace_id,
-            source=source,
-            grant_key=f"order:{order.id}",
-            credits=int(offer.credits),
-            expires_at=expires_at,
-            order_id=order.id,
-        )
-
-        if order.item_type == "subscription":
-            sub = db.scalar(
-                select(SubscriptionRecord)
-                .where(SubscriptionRecord.workspace_id == order.workspace_id)
-                .with_for_update()
-            )
-            if not sub:
-                sub = SubscriptionRecord(
-                    id=f"sub-{uuid.uuid4().hex[:12]}",
-                    workspace_id=order.workspace_id,
-                    plan_id=offer.id,
-                    provider_sub_id=trade_id,
-                    offer_version=offer.version,
-                    state="active",
-                    period_start=now,
-                    period_end=expires_at,
-                    cancel_at_period_end=False,
-                    updated_at=now,
-                )
-                db.add(sub)
-            else:
-                sub.plan_id = offer.id
-                sub.provider_sub_id = trade_id
-                sub.offer_version = offer.version
-                sub.state = "active"
-                sub.period_start = now
-                sub.period_end = expires_at
-                sub.cancel_at_period_end = False
-                sub.updated_at = now
+        _settle_paid_order_tx(db, order, trade_id=trade_id, now=now)
     elif trade_status == "cancelled":
         if order.state == "pending":
             order.state = "cancelled"

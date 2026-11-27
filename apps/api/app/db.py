@@ -18,10 +18,12 @@ def get_engine():
     global _engine
     if _engine is None:
         settings = get_settings()
+        connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
         _engine = create_engine(
             settings.database_url,
             pool_pre_ping=True,
             future=True,
+            connect_args=connect_args,
         )
     return _engine
 

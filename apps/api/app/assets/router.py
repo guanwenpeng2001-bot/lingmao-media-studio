@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -288,6 +289,74 @@ def list_assets(
     return AssetPage(items=[build_asset_out(db, a) for a in page], nextCursor=next_cursor)
 
 
+async def _read_upload_bounded(file: UploadFile, max_bytes: int) -> bytes:
+    buf = bytearray()
+    chunk_size = 64 * 1024
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise AppError(
+                413,
+                "PAYLOAD_TOO_LARGE",
+                f"上传文件大小超过上限 {max_bytes} 字节",
+                details={"maxBytes": max_bytes},
+            )
+    if not buf:
+        raise AppError(415, "UNSUPPORTED_MEDIA", "上传文件内容为空")
+    return bytes(buf)
+
+
+def resolve_asset_delivery_variant(
+    db: Session,
+    storage: PrivateObjectStorage,
+    asset: AssetRecord,
+    needs_watermark: bool,
+) -> tuple[Path, str, str]:
+    if needs_watermark and asset.asset_role != "mask" and asset.media_kind in ("image", "video"):
+        ext = "mp4" if asset.media_kind == "video" else "png"
+        effective_mime = "video/mp4" if asset.media_kind == "video" else "image/png"
+        existing_var = db.scalar(
+            select(AssetVariantRecord).where(
+                AssetVariantRecord.asset_id == asset.id,
+                AssetVariantRecord.kind == "watermarked",
+                AssetVariantRecord.policy_version == "v1",
+            )
+        )
+        variant_key = (
+            existing_var.object_key
+            if existing_var is not None
+            else f"{asset.workspace_id}/{asset.project_id}/variants/{asset.id}_wm_v1.{ext}"
+        )
+        if asset.media_kind == "image":
+            sha, size, _ = storage.ensure_watermarked_image_variant(asset.object_key, variant_key)
+        else:
+            sha, size, _ = storage.ensure_watermarked_video_variant(asset.object_key, variant_key)
+
+        if existing_var is None:
+            db.add(
+                AssetVariantRecord(
+                    id=f"var-{uuid.uuid4().hex[:12]}",
+                    workspace_id=asset.workspace_id,
+                    asset_id=asset.id,
+                    kind="watermarked",
+                    policy_version="v1",
+                    object_key=variant_key,
+                    sha256=sha,
+                    byte_size=size,
+                )
+            )
+            db.commit()
+        return storage.resolve_path(variant_key), effective_mime, "free-tier"
+
+    orig_path = storage.resolve_path(asset.object_key)
+    if not orig_path.is_file():
+        raise AppError(404, "NOT_FOUND", "底层媒体对象不存在")
+    return orig_path, asset.content_type, "none"
+
+
 @router.post("/projects/{projectId}/assets", response_model=AssetOut, status_code=201)
 async def upload_asset(
     projectId: str,
@@ -302,7 +371,8 @@ async def upload_asset(
     if role not in ("reference", "mask", "product", "other"):
         raise AppError(422, "INVALID_INPUT", f"不支持的上传素材角色: {role}")
 
-    raw_bytes = await file.read()
+    settings = get_settings()
+    raw_bytes = await _read_upload_bounded(file, int(settings.max_upload_bytes))
     filename = (file.filename or "upload.bin").strip()
     inspected = inspect_media_bytes(raw_bytes, filename=filename)
 
@@ -527,35 +597,10 @@ def read_media(
     billing_state = build_billing_state(db, ctx.workspace_id)
     needs_watermark = billing_state.entitlements.watermark
     storage = PrivateObjectStorage()
-
-    if needs_watermark and asset.media_kind == "image" and asset.asset_role != "mask":
-        variant_key = f"{asset.workspace_id}/{asset.project_id}/variants/{asset.id}_wm_v1.png"
-        sha, size, data = storage.ensure_watermarked_image_variant(asset.object_key, variant_key)
-        existing_var = db.scalar(
-            select(AssetVariantRecord).where(
-                AssetVariantRecord.asset_id == asset.id,
-                AssetVariantRecord.kind == "watermarked",
-                AssetVariantRecord.policy_version == "v1",
-            )
-        )
-        if not existing_var:
-            db.add(
-                AssetVariantRecord(
-                    id=f"var-{uuid.uuid4().hex[:12]}",
-                    workspace_id=asset.workspace_id,
-                    asset_id=asset.id,
-                    kind="watermarked",
-                    policy_version="v1",
-                    object_key=variant_key,
-                    sha256=sha,
-                    byte_size=size,
-                )
-            )
-            db.commit()
-        watermark_header = "free-tier"
-    else:
-        data = storage.read_bytes(asset.object_key)
-        watermark_header = "none"
+    target_path, effective_mime, watermark_header = resolve_asset_delivery_variant(
+        db, storage, asset, needs_watermark
+    )
+    data = target_path.read_bytes()
 
     disp_type = "attachment" if disposition == "download" else "inline"
     headers = {
@@ -563,7 +608,7 @@ def read_media(
         "Cache-Control": "private, no-store",
         "Content-Disposition": f'{disp_type}; filename="{asset.name}"',
         "X-Lingmao-Watermark": watermark_header,
-        "X-Asset-Mime-Type": asset.content_type,
+        "X-Asset-Mime-Type": effective_mime,
     }
 
     range_header = request.headers.get("range")
@@ -611,6 +656,9 @@ def get_export_license(
     )
     if not asset:
         raise AppError(404, "NOT_FOUND", "素材不存在或无权访问")
+    _, _, allow_download = get_effective_project_permissions(db, ctx, asset.project_id)
+    if not allow_download:
+        raise AppError(403, "READ_ONLY", "当前角色未被授权下载该项目的素材")
     billing_state = build_billing_state(db, ctx.workspace_id)
     now = utcnow()
     is_pro = not billing_state.entitlements.watermark

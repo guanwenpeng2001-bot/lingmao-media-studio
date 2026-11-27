@@ -4,19 +4,22 @@ import asyncio
 import copy
 import io
 import json
+import tempfile
 import uuid
 import zipfile
 from datetime import timedelta
 from typing import Any
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from app.assets.router import resolve_asset_delivery_variant
 from app.auth.deps import (
     AuthContext,
     canonical_digest,
     check_request_idempotency,
     get_current_context,
+    get_effective_project_permissions,
     require_project_access,
     save_request_idempotency,
     sha256_hex,
@@ -416,7 +419,7 @@ def _submit_single_job_tx(
             409,
             "QUOTE_USED",
             f"报价单 {quote.id} 已被消费，不可使用不同幂等键重复提交",
-            details={"quoteId": quote.id, "jobId": orig_job.id if orig_job else None},
+            details={"existingJobId": orig_job.id if orig_job else quote.id, "quoteId": quote.id},
         )
 
     now = utcnow()
@@ -655,17 +658,56 @@ def retry_job(
 async def watch_jobs(
     request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    last_event_id_query: str | None = Query(default=None, alias="lastEventId"),
     ctx: AuthContext = Depends(get_current_context),
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     workspace_id = ctx.workspace_id
+    has_header = "last-event-id" in request.headers
+    if has_header:
+        raw_cursor: str | None = (
+            last_event_id if last_event_id is not None else request.headers.get("last-event-id")
+        )
+    elif "lastEventId" in request.query_params:
+        raw_cursor = (
+            last_event_id_query
+            if last_event_id_query is not None
+            else request.query_params.get("lastEventId")
+        )
+    else:
+        raw_cursor = None
+
     cursor_seq = 0
-    if last_event_id is not None and last_event_id.strip():
-        try:
-            cursor_seq = int(last_event_id.strip())
-            if cursor_seq < 0:
-                raise ValueError("negative cursor")
-        except ValueError as exc:
-            raise AppError(410, "CURSOR_EXPIRED", f"无效的 Last-Event-ID 游标: {last_event_id}") from exc
+    if raw_cursor is not None:
+        stripped = raw_cursor.strip()
+        if not stripped or not stripped.isdigit():
+            raise AppError(400, "INVALID_INPUT", f"无效的 Last-Event-ID 游标格式: {raw_cursor}")
+        cursor_seq = int(stripped)
+
+        min_seq = db.scalar(
+            select(func.min(JobEventRecord.seq)).where(
+                JobEventRecord.workspace_id == workspace_id
+            )
+        )
+        if min_seq is not None and cursor_seq < int(min_seq) - 1:
+            raise AppError(
+                410,
+                "CURSOR_EXPIRED",
+                f"事件游标 {cursor_seq} 已超出当前空间保留窗口",
+            )
+        if cursor_seq > 0:
+            cursor_evt = db.scalar(
+                select(JobEventRecord).where(
+                    JobEventRecord.workspace_id == workspace_id,
+                    JobEventRecord.seq == cursor_seq,
+                )
+            )
+            if cursor_evt is None or cursor_evt.at < utcnow() - timedelta(days=7):
+                raise AppError(
+                    410,
+                    "CURSOR_EXPIRED",
+                    f"事件游标 {cursor_seq} 已过期或不存在于当前工作空间",
+                )
 
     session_factory = get_session_factory()
 
@@ -1030,38 +1072,84 @@ def download_batch(
     if not run:
         raise AppError(404, "NOT_FOUND", "批次任务不存在或无权访问")
 
+    _, _, allow_download = get_effective_project_permissions(db, ctx, run.project_id)
+    if not allow_download:
+        raise AppError(403, "READ_ONLY", "当前角色未被授权下载该项目的批量产出素材")
+
     jobs = list(
         db.scalars(
             select(JobRecord)
-            .where(JobRecord.batch_id == run.id, JobRecord.state == "succeeded")
+            .where(
+                JobRecord.batch_id == run.id,
+                JobRecord.workspace_id == ctx.workspace_id,
+                JobRecord.project_id == run.project_id,
+                JobRecord.state == "succeeded",
+            )
             .order_by(JobRecord.created_at.asc(), JobRecord.id.asc())
         ).all()
     )
     if not jobs:
         raise AppError(409, "BATCH_NOT_READY", "当前批次尚无已成功的产出素材可供打包下载")
 
+    billing_state = build_billing_state(db, ctx.workspace_id)
+    needs_watermark = billing_state.entitlements.watermark
     storage = PrivateObjectStorage()
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for idx, j in enumerate(jobs, start=1):
-            params = (j.frozen_input or {}).get("parameters") or {}
-            aspect = str(params.get("aspectRatio", "1x1")).replace(":", "x")
-            preset_id = params.get("platformPresetId") or params.get("outputKind") or "scene"
-            for aid in j.result_refs or []:
-                asset = db.get(AssetRecord, aid)
-                if asset and storage.exists(asset.object_key):
+
+    tmp_zip = tempfile.SpooledTemporaryFile(max_size=4 * 1024 * 1024, mode="w+b")
+    written_count = 0
+    try:
+        with zipfile.ZipFile(tmp_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for idx, j in enumerate(jobs, start=1):
+                params = (j.frozen_input or {}).get("parameters") or {}
+                aspect = str(params.get("aspectRatio", "1x1")).replace(":", "x")
+                preset_id = params.get("platformPresetId") or params.get("outputKind") or "scene"
+                for aid in j.result_refs or []:
+                    asset = db.scalar(
+                        select(AssetRecord).where(
+                            AssetRecord.id == aid,
+                            AssetRecord.workspace_id == ctx.workspace_id,
+                            AssetRecord.project_id == run.project_id,
+                            AssetRecord.state == "ready",
+                        )
+                    )
+                    if not asset:
+                        continue
+                    target_path, _, _ = resolve_asset_delivery_variant(
+                        db, storage, asset, needs_watermark
+                    )
                     ext = "mp4" if asset.media_kind == "video" else "png"
                     arcname = f"{idx:02d}_{preset_id}_{aspect}_{asset.id}.{ext}"
-                    zf.writestr(arcname, storage.read_bytes(asset.object_key))
+                    zf.write(target_path, arcname=arcname)
+                    written_count += 1
+        if written_count == 0:
+            tmp_zip.close()
+            raise AppError(409, "BATCH_NOT_READY", "当前批次尚无已就绪的产出素材可供打包下载")
+        tmp_zip.seek(0, io.SEEK_END)
+        zip_size = tmp_zip.tell()
+        tmp_zip.seek(0)
+    except Exception:
+        tmp_zip.close()
+        raise
 
-    zip_bytes = zip_buf.getvalue()
-    return Response(
-        content=zip_bytes,
+    def _iter_zip():
+        try:
+            while True:
+                chunk = tmp_zip.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            tmp_zip.close()
+
+    return StreamingResponse(
+        _iter_zip(),
         status_code=200,
         media_type="application/zip",
         headers={
+            "Cache-Control": "private, no-store",
             "Content-Disposition": f'attachment; filename="batch_{run.id}.zip"',
-            "Content-Length": str(len(zip_bytes)),
+            "Content-Length": str(zip_size),
+            "X-Lingmao-Watermark": "free-tier" if needs_watermark else "none",
         },
     )
 

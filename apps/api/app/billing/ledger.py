@@ -108,7 +108,7 @@ def reserve_credits_for_items(
     now = utcnow()
     total_required = sum(cost for _, cost, _ in items)
 
-    # Order by earliest expires_at first (trial / subscription lots before long-term packs), NULLS LAST
+    # Strictly order by pool source priority (trial -> subscription -> pack), then expires_at ASC within the same pool
     source_priority = case(
         (CreditLotRecord.source == "trial", 0),
         (CreditLotRecord.source == "subscription", 1),
@@ -123,8 +123,8 @@ def reserve_credits_for_items(
                 CreditLotRecord.available > 0,
             )
             .order_by(
-                CreditLotRecord.expires_at.asc().nulls_last(),
                 source_priority.asc(),
+                CreditLotRecord.expires_at.asc().nulls_last(),
                 CreditLotRecord.created_at.asc(),
                 CreditLotRecord.id.asc(),
             )
@@ -363,11 +363,21 @@ def build_billing_state(db: Session, workspace_id: str) -> BillingStateOut:
     if sub.period_end is not None and sub.period_end <= now and sub.state in ("active", "trialing"):
         effective_sub_state = "expired"
 
+    source_priority = case(
+        (CreditLotRecord.source == "trial", 0),
+        (CreditLotRecord.source == "subscription", 1),
+        else_=2,
+    )
     lots = list(
         db.scalars(
             select(CreditLotRecord)
             .where(CreditLotRecord.workspace_id == workspace_id)
-            .order_by(CreditLotRecord.expires_at.asc().nulls_last(), CreditLotRecord.created_at.asc())
+            .order_by(
+                source_priority.asc(),
+                CreditLotRecord.expires_at.asc().nulls_last(),
+                CreditLotRecord.created_at.asc(),
+                CreditLotRecord.id.asc(),
+            )
         ).all()
     )
 
@@ -403,7 +413,11 @@ def build_billing_state(db: Session, workspace_id: str) -> BillingStateOut:
     canvas_node_limit = settings.default_canvas_node_limit
 
     if sub.plan_id:
-        offer = db.get(OfferRecord, (sub.plan_id, sub.offer_version))
+        offer = db.get(OfferRecord, (sub.plan_id, sub.offer_version)) or (
+            db.get(OfferRecord, (f"plan-{sub.plan_id}", sub.offer_version))
+            if not sub.plan_id.startswith("plan-")
+            else None
+        )
         if offer and effective_sub_state == "active":
             limits = offer.limits or {}
             max_concurrent = int(limits.get("maxConcurrentJobs", max_concurrent))

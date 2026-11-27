@@ -635,6 +635,24 @@ class PresetOut(StrictModel):
     version: int
 
 
+class PortraitOptionsOut(StrictModel):
+    poses: list[str]
+    scenes: list[str]
+    skinTones: list[str]
+    ageGroups: list[str]
+    bodyTypes: list[str]
+    genders: list[str]
+
+
+class PortraitOut(StrictModel):
+    id: str
+    label: str
+    previewUrl: str
+    licenseVersion: str
+    usage: list[Literal["try_on", "hand_held", "worn"]]
+    options: PortraitOptionsOut
+
+
 class PlanOut(StrictModel):
     id: str
     name: str

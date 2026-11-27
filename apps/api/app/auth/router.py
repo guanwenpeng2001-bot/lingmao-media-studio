@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import uuid
 from datetime import timedelta
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.auth.deps import (
@@ -73,6 +73,18 @@ def _build_session_out(ctx: AuthContext) -> SessionOut:
     )
 
 
+def _should_use_secure_cookie(request: Request) -> bool:
+    settings = get_settings()
+    if settings.cookie_secure is not None:
+        return bool(settings.cookie_secure)
+    scheme = request.url.scheme.lower()
+    if settings.trust_proxy_headers:
+        fwd_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        if fwd_proto:
+            scheme = fwd_proto
+    return scheme == "https"
+
+
 @router.post("/auth/otp", response_model=OtpSent, status_code=202)
 def request_otp(body: OtpChallenge, db: Session = Depends(get_db)) -> OtpSent:
     phone = body.phone.strip()
@@ -101,6 +113,7 @@ def request_otp(body: OtpChallenge, db: Session = Depends(get_db)) -> OtpSent:
 @router.post("/auth/session", response_model=SessionOut, status_code=200)
 def start_session(
     body: Login,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ) -> SessionOut:
@@ -139,10 +152,12 @@ def start_session(
     db.add(sess)
     db.commit()
 
+    secure_cookie = _should_use_secure_cookie(request)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=raw_token,
         httponly=True,
+        secure=secure_cookie,
         samesite="lax",
         path="/",
         max_age=7 * 24 * 3600,
@@ -158,13 +173,20 @@ def get_session(ctx: AuthContext = Depends(get_current_context)) -> SessionOut:
 
 @router.delete("/auth/session", status_code=204)
 def end_session(
+    request: Request,
     response: Response,
     ctx: AuthContext = Depends(get_current_context),
     db: Session = Depends(get_db),
 ) -> Response:
     ctx.session.revoked_at = utcnow()
     db.commit()
-    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        secure=_should_use_secure_cookie(request),
+        httponly=True,
+        samesite="lax",
+    )
     return Response(status_code=204)
 
 

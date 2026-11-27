@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shutil
 import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -192,18 +195,102 @@ class PrivateObjectStorage:
             return hashlib.sha256(data).hexdigest(), len(data), data
 
         raw = self.read_bytes(source_key)
-        with Image.open(io.BytesIO(raw)) as img:
-            rgba = img.convert("RGBA")
-            overlay = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
-            draw = ImageDraw.Draw(overlay)
-            w, h = rgba.size
-            banner_h = max(28, h // 12)
-            draw.rectangle([(0, h - banner_h), (w, h)], fill=(15, 23, 42, 165))
-            draw.text((16, h - banner_h + 6), "LINGMAO STUDIO · FREE PREVIEW WATERMARK", fill=(255, 255, 255, 230))
-            combined = Image.alpha_composite(rgba, overlay).convert("RGB")
-            buf = io.BytesIO()
-            combined.save(buf, format="PNG")
-            wm_bytes = buf.getvalue()
+        try:
+            with Image.open(io.BytesIO(raw)) as img:
+                rgba = img.convert("RGBA")
+                overlay = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay)
+                w, h = rgba.size
+                banner_h = max(28, h // 12)
+                draw.rectangle([(0, h - banner_h), (w, h)], fill=(15, 23, 42, 165))
+                draw.text((16, h - banner_h + 6), "LINGMAO STUDIO · FREE PREVIEW WATERMARK", fill=(255, 255, 255, 230))
+                combined = Image.alpha_composite(rgba, overlay).convert("RGB")
+                buf = io.BytesIO()
+                combined.save(buf, format="PNG")
+                wm_bytes = buf.getvalue()
+            sha, size = self.put_bytes(variant_key, wm_bytes)
+            return sha, size, wm_bytes
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                503,
+                "PROVIDER_UNAVAILABLE",
+                "免费版图片水印合成失败，已拒绝无水印输出",
+            ) from exc
 
-        sha, size = self.put_bytes(variant_key, wm_bytes)
-        return sha, size, wm_bytes
+    def ensure_watermarked_video_variant(self, source_key: str, variant_key: str) -> tuple[str, int, bytes]:
+        if self.exists(variant_key):
+            data = self.read_bytes(variant_key)
+            return hashlib.sha256(data).hexdigest(), len(data), data
+
+        source_path = self.resolve_path(source_key)
+        if not source_path.is_file():
+            raise AppError(404, "NOT_FOUND", "底层媒体对象不存在")
+
+        settings = get_settings()
+        if settings.ffmpeg_bin.strip():
+            ffmpeg_bin = settings.ffmpeg_bin.strip()
+        else:
+            ffmpeg_bin = (
+                shutil.which("ffmpeg")
+                or r"C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
+            )
+
+        if not ffmpeg_bin or not Path(ffmpeg_bin).is_file():
+            raise AppError(
+                503,
+                "PROVIDER_UNAVAILABLE",
+                "视频水印组件 ffmpeg 未就绪，拒绝导出未加水印免费视频",
+            )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="lingmao_wm_vid_") as tmpdir:
+                tmp_path = Path(tmpdir)
+                wm_png_path = tmp_path / "wm_badge.png"
+                out_mp4_path = tmp_path / "watermarked.mp4"
+
+                badge = Image.new("RGBA", (240, 32), (15, 23, 42, 200))
+                draw = ImageDraw.Draw(badge)
+                draw.text((10, 8), "LINGMAO · FREE WATERMARK", fill=(255, 255, 255, 240))
+                badge.save(wm_png_path, format="PNG")
+
+                cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    str(source_path),
+                    "-i",
+                    str(wm_png_path),
+                    "-filter_complex",
+                    "[0:v][1:v]overlay=max(0\\,W-w-12):max(0\\,H-h-12),format=yuv420p[v]",
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "0:a?",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    str(out_mp4_path),
+                ]
+                proc = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
+                if proc.returncode != 0 or not out_mp4_path.is_file() or out_mp4_path.stat().st_size <= 256:
+                    raise RuntimeError("ffmpeg watermark process failed")
+                wm_bytes = out_mp4_path.read_bytes()
+            sha, size = self.put_bytes(variant_key, wm_bytes)
+            return sha, size, wm_bytes
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                503,
+                "PROVIDER_UNAVAILABLE",
+                "免费版视频水印合成失败，已拒绝无水印输出",
+            ) from exc

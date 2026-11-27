@@ -69,6 +69,25 @@ class Settings(BaseSettings):
     default_max_canvas_count: int = 100
     worker_poll_interval_seconds: float = 0.5
     worker_lease_seconds: int = 30
+    sse_retention_seconds: int = 86400
+    sse_retention_max_events: int = 500
+    ffmpeg_bin: str = ""
+    cookie_secure: bool | None = None
+    trust_proxy_headers: bool = False
+    allowed_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:8000,http://127.0.0.1:8000,"
+        "http://testserver,https://testserver"
+    )
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def allowed_origins_set(self) -> set[str]:
+        return {o.lower() for o in self.allowed_origins_list}
 
     @property
     def is_demo_inference(self) -> bool:

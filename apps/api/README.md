@@ -49,4 +49,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 # 3. Start the independent persistent Job Worker (Terminal 2)
 cd apps/api
 python -m app.worker
+
+# 4. Run the automated backend regression test suite
+cd apps/api
+python -m pytest -q
 ```

@@ -11,14 +11,38 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
+
+JSONB = JSON().with_variant(PG_JSONB(), "postgresql")
+
+
+class TzDateTime(TypeDecorator):
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+# Replace DateTime(timezone=True) with TzDateTime for transparent timezone awareness across dialects
+def DateTime(timezone: bool = True):  # type: ignore[no-redef]
+    return TzDateTime()
 
 
 def utcnow() -> datetime:
