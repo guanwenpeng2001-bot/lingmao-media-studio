@@ -1,0 +1,328 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  web-ci:
+    name: Web Typecheck, Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build
+        run: npm run build
+
+      - name: Run unit tests
+        run: npm test
+
+  api-ci:
+    name: API Compile, OpenAPI & Pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install system ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Bytecode compile check
+        run: python -m compileall -q app
+
+      - name: Verify runtime OpenAPI contract
+        run: |
+          python - <<'PY'
+          from app.main import app
+
+          spec = app.openapi()
+          paths = spec.get("paths", {})
+          assert len(paths) == 55, f"Expected 55 OpenAPI paths, got {len(paths)}"
+
+          confirm_path = "/api/v1/billing/checkout-sessions/{checkoutId}/sandbox-confirm"
+          confirm_op = paths.get(confirm_path, {}).get("post")
+          assert confirm_op is not None, f"Missing POST {confirm_path}"
+
+          params = confirm_op.get("parameters", [])
+          idemp = next(
+              (p for p in params if p.get("in") == "header" and p.get("name") == "Idempotency-Key"),
+              None,
+          )
+          assert idemp is not None, "Missing Idempotency-Key header parameter on sandbox-confirm"
+          assert idemp.get("required") is True, f"Expected Idempotency-Key required=True, got {idemp}"
+          print(f"OpenAPI check PASSED: {len(paths)} paths, sandbox-confirm Idempotency-Key required=True")
+          PY
+
+      - name: Run pytest suite
+        run: python -m pytest -v
+
+  docker-ci:
+    name: Docker Build & Compose Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose files & fail-closed defaults
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.sandbox.yml config --quiet
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          raw = subprocess.check_output(["docker", "compose", "config", "--format", "json"], text=True)
+          cfg = json.loads(raw)
+          api_env = cfg["services"]["api"]["environment"]
+          assert api_env["LINGMAO_ENV_MODE"] == "live", f"Expected live, got {api_env['LINGMAO_ENV_MODE']}"
+          assert str(api_env["LINGMAO_DEMO_INFERENCE_ENABLED"]).lower() == "false"
+          assert str(api_env["LINGMAO_SANDBOX_BILLING_ENABLED"]).lower() == "false"
+          assert str(api_env["LINGMAO_SANDBOX_OTP_ENABLED"]).lower() == "false"
+          assert api_env.get("LINGMAO_PAYMENT_WEBHOOK_SECRET", "") == ""
+          assert api_env.get("LINGMAO_GENERATION_WEBHOOK_SECRET", "") == ""
+          assert api_env.get("LINGMAO_SANDBOX_OTP_CODE", "") == ""
+          print("Compose config & fail-closed defaults check PASSED")
+          PY
+
+      - name: Build API and Web images
+        run: docker compose -f docker-compose.yml -f docker-compose.sandbox.yml build
+
+      - name: Verify ffmpeg inside API image
+        run: docker compose run --rm --no-deps api ffmpeg -version | head -n 1
+
+      - name: Verify fail-closed live compose behavior
+        run: |
+          docker compose up -d --wait
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          def post_json(url, payload):
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers={
+                      "Content-Type": "application/json",
+                      "Origin": "http://localhost:8080",
+                  },
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      return resp.status, json.loads(resp.read().decode("utf-8"))
+              except urllib.error.HTTPError as exc:
+                  return exc.code, json.loads(exc.read().decode("utf-8"))
+
+          status_otp, body_otp = post_json("http://localhost:8080/api/v1/auth/otp", {"phone": "+8613800138000"})
+          assert status_otp == 503, f"Expected 503 in live mode for OTP, got {status_otp}: {body_otp}"
+          assert body_otp["error"]["code"] == "PROVIDER_UNAVAILABLE"
+
+          status_sbx, body_sbx = post_json(
+              "http://localhost:8080/api/v1/billing/checkout-sessions/chk-live-probe/sandbox-confirm",
+              {},
+          )
+          assert status_sbx == 404, f"Expected 404 in live mode for sandbox-confirm, got {status_sbx}: {body_sbx}"
+          assert body_sbx["error"]["code"] == "FEATURE_DISABLED"
+          print("Live fail-closed runtime verification PASSED")
+          PY
+          docker compose down -v
+
+      - name: Generate ephemeral sandbox secrets
+        run: |
+          PAY_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          GEN_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::${PAY_SECRET}"
+          echo "::add-mask::${GEN_SECRET}"
+          echo "LINGMAO_PAYMENT_WEBHOOK_SECRET=${PAY_SECRET}" >> "$GITHUB_ENV"
+          echo "LINGMAO_GENERATION_WEBHOOK_SECRET=${GEN_SECRET}" >> "$GITHUB_ENV"
+          echo "LINGMAO_SANDBOX_OTP_CODE=123456" >> "$GITHUB_ENV"
+
+      - name: Start full Compose sandbox stack
+        run: docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --wait
+
+      - name: Run live end-to-end smoke verification via Nginx
+        run: |
+          python3 - <<'PY'
+          import http.cookiejar
+          import json
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE_URL = "http://localhost:8080"
+          ORIGIN = "http://localhost:8080"
+
+          # 1. Verify Compose service states (postgres healthy, migrate exited 0, api healthy, worker running, web running)
+          ps_raw = subprocess.check_output(
+              [
+                  "docker",
+                  "compose",
+                  "-f",
+                  "docker-compose.yml",
+                  "-f",
+                  "docker-compose.sandbox.yml",
+                  "ps",
+                  "-a",
+                  "--format",
+                  "json",
+              ],
+              text=True,
+          ).strip()
+          rows = [json.loads(line) for line in ps_raw.splitlines() if line.strip()]
+          by_service = {r["Service"]: r for r in rows}
+
+          assert by_service["postgres"]["State"] == "running" and by_service["postgres"]["Health"] == "healthy", by_service["postgres"]
+          assert by_service["migrate"]["State"] == "exited" and int(by_service["migrate"]["ExitCode"]) == 0, by_service["migrate"]
+          assert by_service["api"]["State"] == "running" and by_service["api"]["Health"] == "healthy", by_service["api"]
+          assert by_service["worker"]["State"] == "running", by_service["worker"]
+          assert by_service["web"]["State"] == "running", by_service["web"]
+          print("Service states verified: postgres=healthy, migrate=exited(0), api=healthy, worker=running, web=running")
+
+          # 2. Verify SPA root and deep link return 200 text/html
+          for path in ("/", "/billing/checkout/test-123"):
+              for attempt in range(10):
+                  try:
+                      with urllib.request.urlopen(f"{BASE_URL}{path}", timeout=5) as resp:
+                          ctype = resp.headers.get("Content-Type", "")
+                          body = resp.read().decode("utf-8", errors="replace")
+                          assert resp.status == 200, f"{path} status {resp.status}"
+                          assert "text/html" in ctype.lower(), f"{path} content-type {ctype}"
+                          assert "<html" in body.lower() or "<!doctype html" in body.lower()
+                          break
+                  except Exception:
+                      if attempt == 9:
+                          raise
+                      time.sleep(1)
+          print("SPA root & deep link (/billing/checkout/test-123) verified: 200 text/html")
+
+          # 3. Verify Auth + Billing Checkout + Sandbox Confirm + State via Nginx reverse proxy
+          cj = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+          def request_json(method, path, payload=None, extra_headers=None):
+              headers = {"Origin": ORIGIN}
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload).encode("utf-8")
+                  headers["Content-Type"] = "application/json"
+              if extra_headers:
+                  headers.update(extra_headers)
+              req = urllib.request.Request(f"{BASE_URL}{path}", data=data, headers=headers, method=method)
+              try:
+                  with opener.open(req, timeout=15) as resp:
+                      raw = resp.read().decode("utf-8")
+                      return resp.status, (json.loads(raw) if raw else None), dict(resp.headers)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8")
+                  return exc.code, (json.loads(raw) if raw else None), dict(exc.headers)
+
+          # 3a. OTP + Session Login (verifies HTTP cookie over Nginx proxy)
+          st, otp_resp, _ = request_json("POST", "/api/v1/auth/otp", {"phone": "+8613800138000"})
+          assert st == 202, f"OTP failed: {st} {otp_resp}"
+          challenge_id = otp_resp["challengeId"]
+
+          st, sess_resp, _ = request_json(
+              "POST",
+              "/api/v1/auth/session",
+              {"challengeId": challenge_id, "code": "123456", "agreementVersion": "v1.0"},
+          )
+          assert st == 200, f"Login failed: {st} {sess_resp}"
+          assert sess_resp["mode"] == "sandbox", sess_resp
+          assert len(list(cj)) >= 1, "Expected session cookie to be stored over HTTP"
+
+          # 3b. List plans & create subscription checkout for plan-pro-month (+1000 credits, no watermark)
+          st, plans, _ = request_json("GET", "/api/v1/billing/plans")
+          assert st == 200 and len(plans) >= 1, f"List plans failed: {st} {plans}"
+          pro_month = next((p for p in plans if p["id"] == "plan-pro-month"), plans[0])
+
+          st, checkout, _ = request_json(
+              "POST",
+              "/api/v1/billing/checkout-sessions",
+              {"itemType": "subscription", "offerId": pro_month["id"]},
+              extra_headers={"Idempotency-Key": "ci-smoke-checkout-1"},
+          )
+          assert st == 201, f"Create checkout failed: {st} {checkout}"
+          checkout_id = checkout["id"]
+
+          # 3c. Probe sandbox-confirm WITHOUT Idempotency-Key -> 400 INVALID_IDEMPOTENCY_KEY
+          st, err_body, _ = request_json(
+              "POST",
+              f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+          )
+          assert st == 400, f"Expected 400 without Idempotency-Key, got {st} {err_body}"
+          assert err_body["error"]["code"] == "INVALID_IDEMPOTENCY_KEY", err_body
+
+          # 3d. Call sandbox-confirm WITH Idempotency-Key -> 200 paid
+          st, paid, _ = request_json(
+              "POST",
+              f"/api/v1/billing/checkout-sessions/{checkout_id}/sandbox-confirm",
+              extra_headers={"Idempotency-Key": f"sandbox-confirm-{checkout_id}"},
+          )
+          assert st == 200, f"Sandbox confirm failed: {st} {paid}"
+          assert paid["status"] == "paid", paid
+
+          # 3e. Verify billing state -> active subscription, 1100 availableCredits, watermark False
+          st, bstate, _ = request_json("GET", "/api/v1/billing/state")
+          assert st == 200, f"Billing state failed: {st} {bstate}"
+          assert bstate["subscription"]["state"] == "active", bstate
+          assert bstate["entitlements"]["availableCredits"] == 1100, bstate
+          assert bstate["entitlements"]["watermark"] is False, bstate
+          assert bstate["checkoutMode"] == "sandbox", bstate
+
+          # 3f. Verify SSE reverse proxy headers / content-type
+          sse_req = urllib.request.Request(f"{BASE_URL}/api/v1/events/jobs", method="GET")
+          with opener.open(sse_req, timeout=15) as sse_resp:
+              assert sse_resp.status == 200
+              assert "text/event-stream" in sse_resp.headers.get("Content-Type", "").lower()
+
+          print("Live end-to-end Nginx + API + Postgres + Worker smoke verification PASSED")
+          PY
+
+      - name: Dump Compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.sandbox.yml logs --tail=50
+
+      - name: Tear down Compose stack
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.sandbox.yml down -v
+          docker compose down -v

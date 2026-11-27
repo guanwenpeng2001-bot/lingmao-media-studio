@@ -1,0 +1,24 @@
+# Opt-in sandbox override for local integration and CI smoke verification.
+# Combine explicitly with base compose:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
+#
+# Secrets and sandbox OTP codes are NEVER hardcoded; pass them from the host environment:
+#   LINGMAO_SANDBOX_OTP_CODE, LINGMAO_PAYMENT_WEBHOOK_SECRET, LINGMAO_GENERATION_WEBHOOK_SECRET
+
+x-sandbox-env: &sandbox-env
+  LINGMAO_ENV_MODE: sandbox
+  LINGMAO_DEMO_INFERENCE_ENABLED: "true"
+  LINGMAO_SANDBOX_BILLING_ENABLED: "true"
+  LINGMAO_SANDBOX_OTP_ENABLED: "true"
+  LINGMAO_SANDBOX_OTP_CODE: ${LINGMAO_SANDBOX_OTP_CODE:-}
+  LINGMAO_PAYMENT_WEBHOOK_SECRET: ${LINGMAO_PAYMENT_WEBHOOK_SECRET:-}
+  LINGMAO_GENERATION_WEBHOOK_SECRET: ${LINGMAO_GENERATION_WEBHOOK_SECRET:-}
+
+services:
+  api:
+    environment:
+      <<: *sandbox-env
+
+  worker:
+    environment:
+      <<: *sandbox-env
